@@ -1,5 +1,6 @@
 import type { CandlePoint, PrevDayLevels } from "./types";
-import { upstoxConfigured, resolveInstrumentKeys, fetchRecent5mWithLevels, fetchLtpBatch, mapPool } from "./upstox";
+import { upstoxConfigured, resolveInstrumentKeys, fetchLtpBatch, mapPool } from "./upstox";
+import { fetchRecent5mWithLevelsFast } from "./upstoxFast";
 import { simulateSymbol } from "./simulate";
 import { isCandleCompleted } from "./time";
 
@@ -38,7 +39,7 @@ async function collectLive(symbols: string[], dateKey: string, cutoff: Date, opt
     const key = keys.get(feed.symbol);
     if (!key) { feed.error = "instrument key unresolved"; return; }
     try {
-      const result = await fetchRecent5mWithLevels(key, dateKey, opts.requestTimeoutMs, opts.maxRetries);
+      const result = await fetchRecent5mWithLevelsFast(key, dateKey, opts.requestTimeoutMs, opts.maxRetries);
       feed.candles = completedOnly(result.candles, cutoff, opts.timeframeMinutes);
       feed.warmup = result.warmup;
       feed.levels = result.levels;
