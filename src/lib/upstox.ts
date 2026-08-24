@@ -1,12 +1,3 @@
-/**
- * Upstox API client — SERVER-SIDE ONLY.
- *
- * - Access token comes exclusively from process.env.UPSTOX_ACCESS_TOKEN.
- * - The token is never sent to the browser, never logged, never persisted.
- * - All requests carry timeouts + bounded retries (handles 429 / 5xx).
- * - One bad symbol never throws upwards: callers get null and keep scanning.
- */
-
 import { gunzipSync } from "node:zlib";
 import { db } from "@/db";
 import { instrumentMap } from "@/db/schema";
@@ -33,21 +24,19 @@ function authHeaders(): Record<string, string> {
 }
 
 class UpstoxHttpError extends Error {
-  constructor(
-    public status: number,
-    message: string
-  ) {
+  constructor(public status: number, message: string) {
     super(message);
   }
 }
 
-async function fetchJson(
-  url: string,
-  timeoutMs: number,
-  maxRetries: number
-): Promise<unknown> {
+/**
+ * Upstox standard APIs are rate-limited. Keep retries short and respect
+ * Retry-After so a single 429 cannot hold the whole Vercel request open.
+ */
+async function fetchJson(url: string, timeoutMs: number, maxRetries: number): Promise<unknown> {
   let attempt = 0;
   let lastErr: Error | null = null;
+
   while (attempt <= maxRetries) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -57,43 +46,45 @@ async function fetchJson(
         signal: controller.signal,
         cache: "no-store",
       });
+
       if (res.status === 401) {
-        // Expired/invalid token — retrying will not help.
         throw new UpstoxHttpError(401, "Upstox token expired or invalid");
       }
+
       if (res.status === 429 || res.status >= 500) {
         const retryAfter = Number(res.headers.get("retry-after") ?? "0");
-        const backoff =
-          Math.max(retryAfter * 1000, 350 * Math.pow(2, attempt)) +
-          Math.random() * 150;
+        const delay = Math.min(
+          Math.max(retryAfter * 1000, 250 * Math.pow(2, attempt)),
+          1500
+        );
         lastErr = new UpstoxHttpError(res.status, `HTTP ${res.status}`);
         attempt++;
-        await new Promise((r) => setTimeout(r, backoff));
+        if (attempt <= maxRetries) await new Promise((r) => setTimeout(r, delay));
         continue;
       }
-      if (!res.ok) {
-        throw new UpstoxHttpError(res.status, `HTTP ${res.status}`);
-      }
+
+      if (!res.ok) throw new UpstoxHttpError(res.status, `HTTP ${res.status}`);
       return (await res.json()) as unknown;
     } catch (err) {
-      if (err instanceof UpstoxHttpError && (err.status === 401 || (err.status !== 429 && err.status < 500))) {
+      if (
+        err instanceof UpstoxHttpError &&
+        (err.status === 401 || (err.status !== 429 && err.status < 500))
+      ) {
         throw err;
       }
       lastErr = err as Error;
       attempt++;
       if (attempt <= maxRetries) {
-        await new Promise((r) =>
-          setTimeout(r, 350 * Math.pow(2, attempt) + Math.random() * 150)
-        );
+        await new Promise((r) => setTimeout(r, 250 * Math.pow(2, attempt)));
       }
     } finally {
       clearTimeout(timer);
     }
   }
+
   throw lastErr ?? new Error("Upstox request failed");
 }
 
-/** Small concurrency pool (no external dependency). */
 export async function mapPool<T, R>(
   items: T[],
   concurrency: number,
@@ -113,10 +104,6 @@ export async function mapPool<T, R>(
   await Promise.all(workers);
   return results;
 }
-
-/* ------------------------------------------------------------------ */
-/* Candle normalization                                                */
-/* ------------------------------------------------------------------ */
 
 interface RawCandleTuple {
   0: string | number;
@@ -142,7 +129,6 @@ function extractCandleTuples(payload: unknown): RawCandleTuple[] {
   return [];
 }
 
-/** Normalize Upstox tuple candles -> ascending, malformed rows removed. */
 export function normalizeCandles(raw: unknown): CandlePoint[] {
   const tuples = extractCandleTuples(raw);
   const out: CandlePoint[] = [];
@@ -153,27 +139,14 @@ export function normalizeCandles(raw: unknown): CandlePoint[] {
     const nums = [o, h, l, c, v].map(Number);
     if (!Number.isFinite(ms) || nums.some((n) => !Number.isFinite(n))) continue;
     const [no, nh, nl, nc, nv] = nums;
-    if (nh < nl || nh <= 0 || nl <= 0 || nv < 0) continue; // malformed candle
-    out.push({
-      t: ms,
-      label: istTimeLabel(new Date(ms)),
-      o: no,
-      h: nh,
-      l: nl,
-      c: nc,
-      v: nv,
-    });
+    if (nh < nl || nh <= 0 || nl <= 0 || nv < 0) continue;
+    out.push({ t: ms, label: istTimeLabel(new Date(ms)), o: no, h: nh, l: nl, c: nc, v: nv });
   }
   out.sort((a, b) => a.t - b.t);
-  // de-duplicate identical timestamps (keep last)
   const dedup = new Map<number, CandlePoint>();
   for (const c of out) dedup.set(c.t, c);
   return Array.from(dedup.values());
 }
-
-/* ------------------------------------------------------------------ */
-/* Instrument key resolution (NSE_EQ|ISIN) with DB cache               */
-/* ------------------------------------------------------------------ */
 
 interface InstrumentRow {
   instrument_key?: string;
@@ -187,82 +160,58 @@ async function downloadInstrumentBundle(timeoutMs: number): Promise<Map<string, 
   for (const url of INSTRUMENT_URLS) {
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 20000);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       const res = await fetch(url, { signal: controller.signal, cache: "no-store" });
       clearTimeout(timer);
       if (!res.ok) continue;
       const buf = Buffer.from(await res.arrayBuffer());
-      const json = gunzipSync(buf).toString("utf8");
-      const rows = JSON.parse(json) as InstrumentRow[];
+      const rows = JSON.parse(gunzipSync(buf).toString("utf8")) as InstrumentRow[];
       for (const r of rows) {
         if (!r.trading_symbol || !r.instrument_key) continue;
         if (r.segment && r.segment !== "NSE_EQ") continue;
         const sym = r.trading_symbol.toUpperCase();
-        if (!map.has(sym)) {
-          map.set(sym, { key: r.instrument_key, name: r.name ?? sym });
-        }
+        if (!map.has(sym)) map.set(sym, { key: r.instrument_key, name: r.name ?? sym });
       }
       if (map.size > 100) return map;
     } catch {
-      // try next bundle URL
+      // Try the next bundle.
     }
   }
   return map;
 }
 
-/** Resolve trading symbols -> Upstox instrument keys (DB-cached). */
-export async function resolveInstrumentKeys(
-  symbols: string[],
-  timeoutMs: number
-): Promise<Map<string, string>> {
+export async function resolveInstrumentKeys(symbols: string[], timeoutMs: number): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   const missing: string[] = [];
   try {
-    const rows = await db
-      .select()
-      .from(instrumentMap)
-      .where(inArray(instrumentMap.symbol, symbols));
+    const rows = await db.select().from(instrumentMap).where(inArray(instrumentMap.symbol, symbols));
     const hit = new Set(rows.map((r) => r.symbol));
     for (const r of rows) out.set(r.symbol, r.instrumentKey);
     for (const s of symbols) if (!hit.has(s)) missing.push(s);
   } catch {
-    for (const s of symbols) missing.push(s);
+    missing.push(...symbols);
   }
   if (missing.length === 0) return out;
 
   const bundle = await downloadInstrumentBundle(timeoutMs);
-  if (bundle.size === 0) return out; // unresolved symbols stay missing
-
+  if (bundle.size === 0) return out;
   const now = new Date();
   for (const s of missing) {
     const found = bundle.get(s);
     if (!found) continue;
     out.set(s, found.key);
     try {
-      await db
-        .insert(instrumentMap)
-        .values({ symbol: s, instrumentKey: found.key, name: found.name, updatedAt: now })
-        .onConflictDoUpdate({
-          target: instrumentMap.symbol,
-          set: { instrumentKey: found.key, name: found.name, updatedAt: now },
-        });
+      await db.insert(instrumentMap).values({ symbol: s, instrumentKey: found.key, name: found.name, updatedAt: now })
+        .onConflictDoUpdate({ target: instrumentMap.symbol, set: { instrumentKey: found.key, name: found.name, updatedAt: now } });
     } catch {
-      // cache write is best-effort
+      // Cache write is best-effort.
     }
   }
   return out;
 }
 
-/* ------------------------------------------------------------------ */
-/* Market data endpoints                                               */
-/* ------------------------------------------------------------------ */
-
-/** Today's (intraday) candles on the 5-minute timeframe. */
-export async function fetchIntraday5m(
-  instrumentKey: string,
-  timeoutMs: number,
-  maxRetries: number
-): Promise<CandlePoint[]> {
+/** Current day's completed 5m candles. Prefer V3; V2 is only a fallback. */
+export async function fetchIntraday5m(instrumentKey: string, timeoutMs: number, maxRetries: number): Promise<CandlePoint[]> {
   const key = encodeURIComponent(instrumentKey);
   const urls = [
     `${API_BASE}/v3/historical-candle/intraday/${key}/minutes/5`,
@@ -271,8 +220,7 @@ export async function fetchIntraday5m(
   let lastErr: Error | null = null;
   for (const url of urls) {
     try {
-      const payload = await fetchJson(url, timeoutMs, maxRetries);
-      return normalizeCandles(payload);
+      return normalizeCandles(await fetchJson(url, timeoutMs, maxRetries));
     } catch (err) {
       if (err instanceof UpstoxHttpError && err.status === 401) throw err;
       lastErr = err as Error;
@@ -281,7 +229,6 @@ export async function fetchIntraday5m(
   throw lastErr ?? new Error("intraday fetch failed");
 }
 
-/** Previous completed trading day levels (from daily candles). */
 export async function fetchPrevDayLevels(
   instrumentKey: string,
   todayKey: string,
@@ -290,56 +237,74 @@ export async function fetchPrevDayLevels(
 ): Promise<PrevDayLevels | null> {
   const key = encodeURIComponent(instrumentKey);
   const fromDate = epochForIst(todayKey, "00:00");
-  const from = new Date(fromDate.getTime() - 15 * 24 * 3600 * 1000);
-  const to = new Date(fromDate.getTime() - 24 * 3600 * 1000);
-  const fromStr = istDateKey(from);
-  const toStr = istDateKey(to);
-  const url = `${API_BASE}/v2/historical-candle/${key}/day/${toStr}/${fromStr}`;
-  const payload = await fetchJson(url, timeoutMs, maxRetries);
-  const candles = normalizeCandles(payload);
-  // The most recent completed daily candle is the previous trading day.
+  const from = new Date(fromDate.getTime() - 15 * 86400000);
+  const to = new Date(fromDate.getTime() - 86400000);
+  const url = `${API_BASE}/v3/historical-candle/${key}/days/1/${istDateKey(to)}/${istDateKey(from)}`;
+  const candles = normalizeCandles(await fetchJson(url, timeoutMs, maxRetries));
   const prev = candles.filter((c) => c.t < fromDate.getTime()).pop();
   if (!prev) return null;
+  return { pdh: prev.h, pdl: prev.l, prevClose: prev.c, prevOpen: prev.o, dayKey: istDateKey(new Date(prev.t)) };
+}
+
+/**
+ * One-request-per-symbol bootstrap for the scanner.
+ *
+ * It fetches several recent 5-minute sessions in one V3 historical request,
+ * then derives PDH/PDL and warmup candles locally. This removes the old
+ * three-request-per-symbol pattern (daily + warmup + intraday), which was
+ * exhausting Upstox's standard API quota and causing Vercel 504s.
+ */
+export async function fetchRecent5mWithLevels(
+  instrumentKey: string,
+  todayKey: string,
+  timeoutMs: number,
+  maxRetries: number
+): Promise<{ candles: CandlePoint[]; warmup: CandlePoint[]; levels: PrevDayLevels | null }> {
+  const key = encodeURIComponent(instrumentKey);
+  const todayStart = epochForIst(todayKey, "00:00").getTime();
+  const from = new Date(todayStart - 7 * 86400000);
+  const url = `${API_BASE}/v3/historical-candle/${key}/minutes/5/${todayKey}/${istDateKey(from)}`;
+  const all = normalizeCandles(await fetchJson(url, timeoutMs, maxRetries));
+
+  const today = all.filter((c) => c.t >= todayStart);
+  const prior = all.filter((c) => c.t < todayStart);
+  if (!prior.length) return { candles: today, warmup: [], levels: null };
+
+  const prevDayKey = istDateKey(new Date(prior[prior.length - 1].t));
+  const prevDay = prior.filter((c) => istDateKey(new Date(c.t)) === prevDayKey);
+  const levels = prevDay.length
+    ? {
+        pdh: Math.max(...prevDay.map((c) => c.h)),
+        pdl: Math.min(...prevDay.map((c) => c.l)),
+        prevClose: prevDay[prevDay.length - 1].c,
+        prevOpen: prevDay[0].o,
+        dayKey: prevDayKey,
+      }
+    : null;
+
   return {
-    pdh: prev.h,
-    pdl: prev.l,
-    prevClose: prev.c,
-    prevOpen: prev.o,
-    dayKey: istDateKey(new Date(prev.t)),
+    candles: today,
+    warmup: prior.slice(-160),
+    levels,
   };
 }
 
-/** Best-effort live LTP ticks (never used for confirmations). */
-export async function fetchLtpBatch(
-  instrumentKeys: string[],
-  timeoutMs: number
-): Promise<Map<string, number>> {
+export async function fetchLtpBatch(instrumentKeys: string[], timeoutMs: number): Promise<Map<string, number>> {
   const out = new Map<string, number>();
-  const chunks: string[][] = [];
-  for (let i = 0; i < instrumentKeys.length; i += 100) {
-    chunks.push(instrumentKeys.slice(i, i + 100));
-  }
-  await mapPool(chunks, 2, async (chunk) => {
+  for (let i = 0; i < instrumentKeys.length; i += 500) {
+    const chunk = instrumentKeys.slice(i, i + 500);
     try {
       const q = chunk.map((k) => `instrument_key=${encodeURIComponent(k)}`).join("&");
-      const payload = (await fetchJson(
-        `${API_BASE}/v2/market-quote/ltp?${q}`,
-        timeoutMs,
-        1
-      )) as { data?: Record<string, { instrument_token?: string; last_price?: number }> };
-      const data = payload?.data ?? {};
-      for (const val of Object.values(data)) {
-        const token = val?.instrument_token;
+      const payload = (await fetchJson(`${API_BASE}/v3/market-quote/ltp?${q}`, timeoutMs, 1)) as {
+        data?: Record<string, { instrument_token?: string; last_price?: number }>;
+      };
+      for (const [key, val] of Object.entries(payload?.data ?? {})) {
         const price = val?.last_price;
-        if (token && typeof price === "number" && Number.isFinite(price)) {
-          out.set(token, price);
-        }
+        if (typeof price === "number" && Number.isFinite(price)) out.set(key, price);
       }
     } catch {
-      // LTP refresh is optional; ignore
+      // LTP is display-only.
     }
-  });
-  // map instrument_token (same string as key in v2 ltp echo) -> price
-  // v2 echoes keys as "NSE_EQ|ISIN" so token == instrument key
+  }
   return out;
 }
