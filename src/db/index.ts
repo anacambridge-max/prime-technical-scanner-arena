@@ -13,26 +13,19 @@ if (!rawDatabaseUrl) {
 }
 
 /**
- * Some Supabase connection strings include sslmode=verify-full/require.
- * node-postgres gives URL ssl parameters precedence over the `ssl` object,
- * which can make Vercel fail with SELF_SIGNED_CERT_IN_CHAIN even when
- * rejectUnauthorized:false is supplied below.
- *
- * Remove only the URL-level certificate/SSL-mode options and let the Pool's
- * explicit SSL configuration control the connection. The connection remains
- * encrypted; this only disables CA-chain verification for this managed DB.
+ * Supabase connection URLs can carry sslmode/sslrootcert query parameters.
+ * node-postgres lets URL-level SSL options override the Pool `ssl` object,
+ * which can produce SELF_SIGNED_CERT_IN_CHAIN on Vercel. Strip only those
+ * URL-level options and keep the connection encrypted with explicit TLS.
  */
 function normalizeDatabaseUrl(value: string): string {
   try {
     const url = new URL(value);
-    url.searchParams.delete("sslmode");
-    url.searchParams.delete("sslcert");
-    url.searchParams.delete("sslkey");
-    url.searchParams.delete("sslrootcert");
+    for (const key of ["sslmode", "sslcert", "sslkey", "sslrootcert"]) {
+      url.searchParams.delete(key);
+    }
     return url.toString();
   } catch {
-    // Keep the original value if the runtime receives a non-URL connection
-    // string; pg can still parse standard libpq-style connection strings.
     return value
       .replace(/([?&])sslmode=[^&]*/gi, "$1")
       .replace(/([?&])sslcert=[^&]*/gi, "$1")
@@ -53,9 +46,10 @@ export const pool =
   new Pool({
     connectionString: databaseUrl,
     ssl: { rejectUnauthorized: false },
-    max: 3,
-    idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 10000,
+    // Keep failed Vercel requests from waiting on dead DB connections.
+    max: 5,
+    idleTimeoutMillis: 5000,
+    connectionTimeoutMillis: 3000,
   });
 
 if (process.env.NODE_ENV !== "production") {
