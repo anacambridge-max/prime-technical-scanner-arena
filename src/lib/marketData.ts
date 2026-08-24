@@ -9,11 +9,28 @@ export interface CollectOptions { concurrency: number; requestTimeoutMs: number;
 
 function completedOnly(candles: CandlePoint[], cutoff: Date, timeframeMinutes: number): CandlePoint[] { return candles.filter((c) => isCandleCompleted(c.t, timeframeMinutes, cutoff)); }
 
+// Upstox standard APIs allow 500 requests/minute. A full Nifty-500 historical
+// scan needs roughly one historical request per symbol, so a single serverless
+// invocation cannot safely scan the whole universe and then repeat every 45s.
+// Rotate three deterministic batches; every symbol is still scanned repeatedly
+// during the 09:15-10:00 window without overrunning the API or Vercel timeout.
+const LIVE_BATCH_COUNT = 3;
+const LIVE_BATCH_WINDOW_MS = 45_000;
+
+function rotatingBatch<T>(items: T[]): T[] {
+  if (items.length <= 1) return items;
+  const batchIndex = Math.floor(Date.now() / LIVE_BATCH_WINDOW_MS) % LIVE_BATCH_COUNT;
+  const batchSize = Math.ceil(items.length / LIVE_BATCH_COUNT);
+  const start = batchIndex * batchSize;
+  return items.slice(start, Math.min(start + batchSize, items.length));
+}
+
 async function collectLive(symbols: string[], dateKey: string, cutoff: Date, opts: CollectOptions): Promise<CollectedMarketData> {
   const notes: string[] = [];
-  const feeds: SymbolFeed[] = symbols.map((symbol) => ({ symbol, candles: [], warmup: [], levels: null, ltp: null, error: null }));
+  const batch = rotatingBatch(symbols);
+  const feeds: SymbolFeed[] = batch.map((symbol) => ({ symbol, candles: [], warmup: [], levels: null, ltp: null, error: null }));
   let keys: Map<string, string> = new Map();
-  try { keys = await resolveInstrumentKeys(symbols, opts.requestTimeoutMs); } catch (err) { notes.push(`instrument resolution failed: ${(err as Error).message}`); }
+  try { keys = await resolveInstrumentKeys(batch, opts.requestTimeoutMs); } catch (err) { notes.push(`instrument resolution failed: ${(err as Error).message}`); }
   const deadline = Date.now() + opts.budgetMs;
   await mapPool(feeds, opts.concurrency, async (feed) => {
     if (Date.now() >= deadline) { feed.error = "scan budget exceeded"; return; }
@@ -28,12 +45,12 @@ async function collectLive(symbols: string[], dateKey: string, cutoff: Date, opt
     } catch (err) { feed.error = (err as Error).message; }
   });
   try {
-    const keyList = symbols.map((s) => keys.get(s)).filter((k): k is string => Boolean(k));
-    const ltpByKey = await fetchLtpBatch(keyList, Math.min(opts.requestTimeoutMs, 5000));
+    const keyList = batch.map((s) => keys.get(s)).filter((k): k is string => Boolean(k));
+    const ltpByKey = await fetchLtpBatch(keyList, Math.min(opts.requestTimeoutMs, 2000));
     for (const feed of feeds) { const key = keys.get(feed.symbol); if (key && ltpByKey.has(key)) feed.ltp = ltpByKey.get(key) ?? null; }
-  } catch { /* display-only */ }
+  } catch { /* LTP is display-only. */ }
   const resolved = feeds.filter((f) => f.candles.length > 0 && f.levels).length;
-  notes.push(`upstox feeds usable: ${resolved}/${feeds.length}`);
+  notes.push(`upstox rotating batch: ${batch.length}/${symbols.length}; usable: ${resolved}/${feeds.length}`);
   return { feeds, source: "UPSTOX", notes };
 }
 
