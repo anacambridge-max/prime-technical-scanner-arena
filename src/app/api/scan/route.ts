@@ -8,6 +8,9 @@ export const dynamic = "force-dynamic";
 // its own shorter time budget, so this is only a final safety boundary.
 export const maxDuration = 60;
 
+// Database persistence is backed by the arena scanner tables in Supabase.
+// The schema is provisioned separately so deployments do not depend on a
+// runtime migration step.
 type ScanRuntimeState = typeof globalThis & {
   __arenaScanInFlight?: Promise<ScanPayload>;
   __arenaLastPayload?: ScanPayload;
