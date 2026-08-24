@@ -1,16 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDashboardPayload } from "@/lib/scanner";
+import { getLockedDashboardPayload } from "@/lib/lockedDashboard";
+import { marketPhase } from "@/lib/time";
+import { SCANNER_CONFIG } from "@/lib/config";
 import { upstoxConfigured } from "@/lib/upstox";
 import type { ScanPayload } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
-// Keep the request below Vercel's Hobby execution ceiling. The collector has
-// its own shorter time budget, so this is only a final safety boundary.
 export const maxDuration = 60;
 
-// Database persistence is backed by the arena scanner tables in Supabase.
-// The schema is provisioned separately so deployments do not depend on a
-// runtime migration step.
 type ScanRuntimeState = typeof globalThis & {
   __arenaScanInFlight?: Promise<ScanPayload>;
   __arenaLastPayload?: ScanPayload;
@@ -67,16 +65,21 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const force = req.nextUrl.searchParams.get("force") === "1";
 
   try {
-    // Prevent overlapping /api/scan requests from starting duplicate Upstox
-    // scans. This is important because the browser auto-refreshes frequently
-    // and Vercel can serve multiple requests from the same warm instance.
     if (runtime.__arenaScanInFlight) {
       return NextResponse.json(busyPayload(), {
         headers: { "Cache-Control": "no-store, max-age=0" },
       });
     }
 
-    const work = getDashboardPayload(force);
+    // IMPORTANT: after 10:00 IST never start a fresh Upstox replay from the
+    // browser. The old post-market replay could keep a Hobby function busy
+    // until Vercel returned 504/network error. After the scan window we only
+    // read the persisted dashboard state.
+    const phase = marketPhase(new Date(), SCANNER_CONFIG);
+    const work = phase === "SCAN_ENDED" && !force
+      ? getLockedDashboardPayload()
+      : getDashboardPayload(force);
+
     runtime.__arenaScanInFlight = work;
     const payload = await work;
     runtime.__arenaLastPayload = payload;
@@ -117,8 +120,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       { status: 200, headers: { "Cache-Control": "no-store, max-age=0" } }
     );
   } finally {
-    // Clear only after the promise has settled so concurrent requests during
-    // the scan are served the last completed payload instead of starting work.
     runtime.__arenaScanInFlight = undefined;
   }
 }
