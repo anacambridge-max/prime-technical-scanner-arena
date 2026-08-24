@@ -62,6 +62,9 @@ function busyPayload(): ScanPayload {
 }
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
+  // `force=1` is intentionally ignored after the live scan window.
+  // This prevents the Refresh button from accidentally starting the old
+  // expensive Upstox replay after 10:00 IST.
   const force = req.nextUrl.searchParams.get("force") === "1";
 
   try {
@@ -71,18 +74,19 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       });
     }
 
-    // IMPORTANT: after 10:00 IST never start a fresh Upstox replay from the
-    // browser. The old post-market replay could keep a Hobby function busy
-    // until Vercel returned 504/network error. After the scan window we only
-    // read the persisted dashboard state.
     const phase = marketPhase(new Date(), SCANNER_CONFIG);
-    const work = phase === "SCAN_ENDED" && !force
+
+    // HARD SAFETY RULE:
+    // Once the 09:15–10:00 IST live window has ended, every request —
+    // including ?force=1 — is read-only. Never start a fresh Upstox scan.
+    const work = phase === "SCAN_ENDED"
       ? getLockedDashboardPayload()
       : getDashboardPayload(force);
 
     runtime.__arenaScanInFlight = work;
     const payload = await work;
     runtime.__arenaLastPayload = payload;
+
     return NextResponse.json(payload, {
       headers: { "Cache-Control": "no-store, max-age=0" },
     });
