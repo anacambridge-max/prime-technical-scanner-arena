@@ -6,7 +6,7 @@
 
 import { db } from "@/db";
 import { scanRuns, snapshots, signalEvents } from "@/db/schema";
-import { and, desc, eq, lt } from "drizzle-orm";
+import { desc, eq, lt } from "drizzle-orm";
 import { SCANNER_CONFIG } from "./config";
 import { UNIVERSE } from "./universe";
 import { istDateKey, istTimeLabel, marketPhase, candleCutoff, epochForIst, type MarketPhase } from "./time";
@@ -37,6 +37,7 @@ const ENGINE_CFG: EngineConfig = {
   minCandlesRequired: SCANNER_CONFIG.minCandlesRequired,
 };
 
+const REPLAY_BATCH_COUNT = 6;
 interface StoredSnapshot { id: number; symbol: string; status: string; statusRank: number; level: string | null; pdh: number | null; pdl: number | null; firstConfirmedAt: Date | null; }
 const SIGNAL_STATUSES = new Set(["CONFIRMED", "SETUP", "WATCH"]);
 
@@ -44,11 +45,11 @@ function toScanRow(r: typeof snapshots.$inferSelect): ScanRow {
   return { symbol: r.symbol, ltp: r.ltp, changePct: r.changePct, dayOpen: r.dayOpen, volumeMultiple: r.volumeMultiple, volumeLabel: r.volumeLabel, ema20: r.ema20, emaBias: r.emaBias ?? "-", pdh: r.pdh, pdl: r.pdl, level: (r.level as LevelTag) ?? "-", distancePct: r.distancePct, setup: (r.setup as SetupType) ?? "NONE", status: (r.status as SignalStatus) ?? "NONE", direction: (r.direction as Direction) ?? "NONE", entry: r.entry, stopLoss: r.stopLoss, target: r.target, reason: r.reason, statusRank: r.statusRank, active: r.active, firstConfirmedAt: r.firstConfirmedAt ? istTimeLabel(r.firstConfirmedAt, true) : null, details: (r.details as AuditDetails | null) ?? null };
 }
 
-async function runScan(dateKey: string, phase: MarketPhase, forcedCutoff?: Date): Promise<{ error: string | null; message: string | null }> {
+async function runScan(dateKey: string, phase: MarketPhase, forcedCutoff?: Date, batchIndex?: number): Promise<{ error: string | null; message: string | null }> {
   const startedAt = new Date();
   const source = upstoxConfigured() ? "UPSTOX" : "SIMULATION";
   const cutoff = forcedCutoff ?? candleCutoff(startedAt, SCANNER_CONFIG, dateKey);
-  const collected = await collectMarketData(UNIVERSE, dateKey, cutoff, { concurrency: SCANNER_CONFIG.upstoxConcurrency, requestTimeoutMs: SCANNER_CONFIG.requestTimeoutMs, maxRetries: SCANNER_CONFIG.maxRetries, timeframeMinutes: SCANNER_CONFIG.timeframeMinutes, budgetMs: 45000 });
+  const collected = await collectMarketData(UNIVERSE, dateKey, cutoff, { concurrency: SCANNER_CONFIG.upstoxConcurrency, requestTimeoutMs: SCANNER_CONFIG.requestTimeoutMs, maxRetries: SCANNER_CONFIG.maxRetries, timeframeMinutes: SCANNER_CONFIG.timeframeMinutes, budgetMs: 33000, batchIndex });
 
   let processed = 0;
   let errorCount = 0;
@@ -117,13 +118,21 @@ async function runScan(dateKey: string, phase: MarketPhase, forcedCutoff?: Date)
 
 async function latestRunInfo(dateKey: string): Promise<{ at: string | null; status: string | null; source: string | null; processed: number; errorCount: number; message: string | null }> {
   try {
-    const rows = await db.select().from(scanRuns).where(eq(scanRuns.scanDate, dateKey)).orderBy(desc(scanRuns.id)).limit(8);
-    const good = rows.find((r) => r.status === "OK" || r.status === "PARTIAL");
-    const any = rows[0];
-    const ref = good ?? any;
+    const rows = await db.select().from(scanRuns).where(eq(scanRuns.scanDate, dateKey)).orderBy(desc(scanRuns.id)).limit(30);
+    const good = rows.filter((r) => r.status === "OK" || r.status === "PARTIAL");
+    const ref = good[0] ?? rows[0];
     if (!ref) return { at: null, status: null, source: null, processed: 0, errorCount: 0, message: null };
-    return { at: istTimeLabel(ref.finishedAt ?? ref.startedAt, true), status: ref.status, source: ref.source, processed: ref.processed, errorCount: ref.errorCount, message: ref.message };
+    const processed = Math.min(UNIVERSE.length, good.reduce((sum, r) => sum + (r.processed ?? 0), 0));
+    const errorCount = good.reduce((sum, r) => sum + (r.errorCount ?? 0), 0);
+    return { at: istTimeLabel(ref.finishedAt ?? ref.startedAt, true), status: ref.status, source: ref.source, processed, errorCount, message: ref.message };
   } catch { return { at: null, status: null, source: null, processed: 0, errorCount: 0, message: null }; }
+}
+
+async function successfulRunCount(dateKey: string): Promise<number> {
+  try {
+    const rows = await db.select({ status: scanRuns.status }).from(scanRuns).where(eq(scanRuns.scanDate, dateKey));
+    return rows.filter((r) => r.status === "OK" || r.status === "PARTIAL").length;
+  } catch { return 0; }
 }
 
 async function loadRowsForDate(dateKey: string): Promise<ScanRow[]> {
@@ -175,7 +184,21 @@ export async function getDashboardPayload(force = false): Promise<ScanPayload> {
   } else if (phase === "PRE_OPEN") {
     message = `Pre-open — live scanning starts at ${SCANNER_CONFIG.scanStart} IST.`;
   } else if (phase === "SCAN_ENDED") {
-    message = `Live scan window (${SCANNER_CONFIG.scanStart}–${SCANNER_CONFIG.scanEnd} IST) ended — results are locked for the day.`;
+    if (source === "UPSTOX") {
+      const completedBatches = await successfulRunCount(dateKey);
+      if (completedBatches < REPLAY_BATCH_COUNT) {
+        ranScan = true;
+        const forced = epochForIst(dateKey, SCANNER_CONFIG.scanEnd);
+        const batchIndex = completedBatches % REPLAY_BATCH_COUNT;
+        const result = await runScan(dateKey, phase, forced, batchIndex);
+        error = result.error;
+        message = result.error ?? `Post-market replay batch ${batchIndex + 1}/${REPLAY_BATCH_COUNT} is being persisted. The 09:15–10:00 window remains the data cutoff.`;
+      } else {
+        message = `Live scan window (${SCANNER_CONFIG.scanStart}–${SCANNER_CONFIG.scanEnd} IST) ended — all universe batches are persisted for the day.`;
+      }
+    } else {
+      message = `Live scan window (${SCANNER_CONFIG.scanStart}–${SCANNER_CONFIG.scanEnd} IST) ended — results are locked for the day.`;
+    }
   } else {
     message = "Market closed — showing the last available scan.";
   }
