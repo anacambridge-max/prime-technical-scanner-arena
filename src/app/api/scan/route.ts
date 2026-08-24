@@ -3,15 +3,10 @@ import { getDashboardPayload } from "@/lib/scanner";
 import { upstoxConfigured } from "@/lib/upstox";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+// Keep this within the practical Vercel function limit; the scanner itself
+// also has a shorter internal budget so requests fail gracefully.
+export const maxDuration = 60;
 
-/**
- * GET /api/scan?force=1
- *
- * On-demand scan trigger + full dashboard state. Safe to poll: a new scan
- * only runs when the live window is open and the rescan gap has elapsed.
- * All Upstox calls stay server-side; the token never reaches the browser.
- */
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const force = req.nextUrl.searchParams.get("force") === "1";
   try {
@@ -20,8 +15,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       headers: { "Cache-Control": "no-store, max-age=0" },
     });
   } catch (err) {
-    // Even a hard failure returns a well-formed payload so the dashboard
-    // keeps rendering the last good data with a visible error banner.
     return NextResponse.json(
       {
         meta: {
