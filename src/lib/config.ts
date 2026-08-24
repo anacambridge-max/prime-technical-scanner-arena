@@ -39,11 +39,13 @@ export const SCANNER_CONFIG = {
   rescanSeconds: num(process.env.RESCAN_SECONDS, 45),
   minCandlesRequired: 5,
 
-  // Nifty 500 needs high enough parallelism to finish inside the serverless
-  // window, while remaining below the Upstox standard request-rate ceiling.
-  upstoxConcurrency: 20,
-  requestTimeoutMs: 4000,
-  maxRetries: 1,
+  // Vercel Hobby has a hard execution ceiling, while Upstox standard APIs
+  // are limited to 500 requests/minute. The live collector therefore scans
+  // the Nifty universe in small rotating batches instead of trying to fetch
+  // every symbol in one serverless invocation.
+  upstoxConcurrency: 25,
+  requestTimeoutMs: 2500,
+  maxRetries: 0,
   eventLogLimit: 250,
 } as const;
 
