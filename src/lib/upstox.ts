@@ -11,118 +11,58 @@ const INSTRUMENT_URLS = [
   "https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz",
 ];
 
-export function upstoxConfigured(): boolean {
-  return Boolean(process.env.UPSTOX_ACCESS_TOKEN?.trim());
-}
+export function upstoxConfigured(): boolean { return Boolean(process.env.UPSTOX_ACCESS_TOKEN?.trim()); }
 
 function authHeaders(): Record<string, string> {
   const token = process.env.UPSTOX_ACCESS_TOKEN?.trim();
-  return {
-    Accept: "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
+  return { Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
 }
 
-class UpstoxHttpError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
-}
+class UpstoxHttpError extends Error { constructor(public status: number, message: string) { super(message); } }
 
-/**
- * Upstox standard APIs are rate-limited. Keep retries short and respect
- * Retry-After so a single 429 cannot hold the whole Vercel request open.
- */
 async function fetchJson(url: string, timeoutMs: number, maxRetries: number): Promise<unknown> {
   let attempt = 0;
   let lastErr: Error | null = null;
-
   while (attempt <= maxRetries) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(url, {
-        headers: authHeaders(),
-        signal: controller.signal,
-        cache: "no-store",
-      });
-
-      if (res.status === 401) {
-        throw new UpstoxHttpError(401, "Upstox token expired or invalid");
-      }
-
+      const res = await fetch(url, { headers: authHeaders(), signal: controller.signal, cache: "no-store" });
+      if (res.status === 401) throw new UpstoxHttpError(401, "Upstox token expired or invalid");
       if (res.status === 429 || res.status >= 500) {
         const retryAfter = Number(res.headers.get("retry-after") ?? "0");
-        const delay = Math.min(
-          Math.max(retryAfter * 1000, 250 * Math.pow(2, attempt)),
-          1500
-        );
+        const delay = Math.min(Math.max(retryAfter * 1000, 250 * Math.pow(2, attempt)), 1500);
         lastErr = new UpstoxHttpError(res.status, `HTTP ${res.status}`);
         attempt++;
         if (attempt <= maxRetries) await new Promise((r) => setTimeout(r, delay));
         continue;
       }
-
       if (!res.ok) throw new UpstoxHttpError(res.status, `HTTP ${res.status}`);
       return (await res.json()) as unknown;
     } catch (err) {
-      if (
-        err instanceof UpstoxHttpError &&
-        (err.status === 401 || (err.status !== 429 && err.status < 500))
-      ) {
-        throw err;
-      }
+      if (err instanceof UpstoxHttpError && (err.status === 401 || (err.status !== 429 && err.status < 500))) throw err;
       lastErr = err as Error;
       attempt++;
-      if (attempt <= maxRetries) {
-        await new Promise((r) => setTimeout(r, 250 * Math.pow(2, attempt)));
-      }
-    } finally {
-      clearTimeout(timer);
-    }
+      if (attempt <= maxRetries) await new Promise((r) => setTimeout(r, 250 * Math.pow(2, attempt)));
+    } finally { clearTimeout(timer); }
   }
-
   throw lastErr ?? new Error("Upstox request failed");
 }
 
-export async function mapPool<T, R>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
+export async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let cursor = 0;
-  const workers = Array.from(
-    { length: Math.min(concurrency, items.length) },
-    async () => {
-      while (cursor < items.length) {
-        const idx = cursor++;
-        results[idx] = await fn(items[idx], idx);
-      }
-    }
-  );
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (cursor < items.length) { const idx = cursor++; results[idx] = await fn(items[idx], idx); }
+  });
   await Promise.all(workers);
   return results;
 }
 
-interface RawCandleTuple {
-  0: string | number;
-  1: number;
-  2: number;
-  3: number;
-  4: number;
-  5: number;
-}
+interface RawCandleTuple { 0: string | number; 1: number; 2: number; 3: number; 4: number; 5: number; }
 
 function extractCandleTuples(payload: unknown): RawCandleTuple[] {
-  if (
-    payload &&
-    typeof payload === "object" &&
-    "data" in payload &&
-    payload.data &&
-    typeof payload.data === "object" &&
-    "candles" in (payload.data as Record<string, unknown>)
-  ) {
+  if (payload && typeof payload === "object" && "data" in payload && payload.data && typeof payload.data === "object" && "candles" in (payload.data as Record<string, unknown>)) {
     const candles = (payload.data as { candles?: unknown }).candles;
     if (Array.isArray(candles)) return candles as RawCandleTuple[];
   }
@@ -148,12 +88,7 @@ export function normalizeCandles(raw: unknown): CandlePoint[] {
   return Array.from(dedup.values());
 }
 
-interface InstrumentRow {
-  instrument_key?: string;
-  trading_symbol?: string;
-  segment?: string;
-  name?: string;
-}
+interface InstrumentRow { instrument_key?: string; trading_symbol?: string; segment?: string; name?: string; }
 
 async function downloadInstrumentBundle(timeoutMs: number): Promise<Map<string, { key: string; name: string }>> {
   const map = new Map<string, { key: string; name: string }>();
@@ -173,9 +108,7 @@ async function downloadInstrumentBundle(timeoutMs: number): Promise<Map<string, 
         if (!map.has(sym)) map.set(sym, { key: r.instrument_key, name: r.name ?? sym });
       }
       if (map.size > 100) return map;
-    } catch {
-      // Try the next bundle.
-    }
+    } catch { /* Try next bundle. */ }
   }
   return map;
 }
@@ -188,53 +121,41 @@ export async function resolveInstrumentKeys(symbols: string[], timeoutMs: number
     const hit = new Set(rows.map((r) => r.symbol));
     for (const r of rows) out.set(r.symbol, r.instrumentKey);
     for (const s of symbols) if (!hit.has(s)) missing.push(s);
-  } catch {
-    missing.push(...symbols);
-  }
+  } catch { missing.push(...symbols); }
   if (missing.length === 0) return out;
 
   const bundle = await downloadInstrumentBundle(timeoutMs);
   if (bundle.size === 0) return out;
   const now = new Date();
+  const cacheRows: Array<{ symbol: string; instrumentKey: string; name: string; updatedAt: Date }> = [];
   for (const s of missing) {
     const found = bundle.get(s);
     if (!found) continue;
     out.set(s, found.key);
-    try {
-      await db.insert(instrumentMap).values({ symbol: s, instrumentKey: found.key, name: found.name, updatedAt: now })
-        .onConflictDoUpdate({ target: instrumentMap.symbol, set: { instrumentKey: found.key, name: found.name, updatedAt: now } });
-    } catch {
-      // Cache write is best-effort.
-    }
+    cacheRows.push({ symbol: s, instrumentKey: found.key, name: found.name, updatedAt: now });
+  }
+
+  // Cache all resolved instruments in one DB call. The old code performed one
+  // INSERT per symbol sequentially, which could exhaust Vercel's 120s runtime.
+  if (cacheRows.length) {
+    try { await db.insert(instrumentMap).values(cacheRows).onConflictDoNothing({ target: instrumentMap.symbol }); }
+    catch { /* Cache is best-effort; resolved keys are still returned. */ }
   }
   return out;
 }
 
-/** Current day's completed 5m candles. Prefer V3; V2 is only a fallback. */
 export async function fetchIntraday5m(instrumentKey: string, timeoutMs: number, maxRetries: number): Promise<CandlePoint[]> {
   const key = encodeURIComponent(instrumentKey);
-  const urls = [
-    `${API_BASE}/v3/historical-candle/intraday/${key}/minutes/5`,
-    `${API_BASE}/v2/historical-candle/intraday/${key}/5minute`,
-  ];
+  const urls = [`${API_BASE}/v3/historical-candle/intraday/${key}/minutes/5`, `${API_BASE}/v2/historical-candle/intraday/${key}/5minute`];
   let lastErr: Error | null = null;
   for (const url of urls) {
-    try {
-      return normalizeCandles(await fetchJson(url, timeoutMs, maxRetries));
-    } catch (err) {
-      if (err instanceof UpstoxHttpError && err.status === 401) throw err;
-      lastErr = err as Error;
-    }
+    try { return normalizeCandles(await fetchJson(url, timeoutMs, maxRetries)); }
+    catch (err) { if (err instanceof UpstoxHttpError && err.status === 401) throw err; lastErr = err as Error; }
   }
   throw lastErr ?? new Error("intraday fetch failed");
 }
 
-export async function fetchPrevDayLevels(
-  instrumentKey: string,
-  todayKey: string,
-  timeoutMs: number,
-  maxRetries: number
-): Promise<PrevDayLevels | null> {
+export async function fetchPrevDayLevels(instrumentKey: string, todayKey: string, timeoutMs: number, maxRetries: number): Promise<PrevDayLevels | null> {
   const key = encodeURIComponent(instrumentKey);
   const fromDate = epochForIst(todayKey, "00:00");
   const from = new Date(fromDate.getTime() - 15 * 86400000);
@@ -246,47 +167,19 @@ export async function fetchPrevDayLevels(
   return { pdh: prev.h, pdl: prev.l, prevClose: prev.c, prevOpen: prev.o, dayKey: istDateKey(new Date(prev.t)) };
 }
 
-/**
- * One-request-per-symbol bootstrap for the scanner.
- *
- * It fetches several recent 5-minute sessions in one V3 historical request,
- * then derives PDH/PDL and warmup candles locally. This removes the old
- * three-request-per-symbol pattern (daily + warmup + intraday), which was
- * exhausting Upstox's standard API quota and causing Vercel 504s.
- */
-export async function fetchRecent5mWithLevels(
-  instrumentKey: string,
-  todayKey: string,
-  timeoutMs: number,
-  maxRetries: number
-): Promise<{ candles: CandlePoint[]; warmup: CandlePoint[]; levels: PrevDayLevels | null }> {
+export async function fetchRecent5mWithLevels(instrumentKey: string, todayKey: string, timeoutMs: number, maxRetries: number): Promise<{ candles: CandlePoint[]; warmup: CandlePoint[]; levels: PrevDayLevels | null }> {
   const key = encodeURIComponent(instrumentKey);
   const todayStart = epochForIst(todayKey, "00:00").getTime();
   const from = new Date(todayStart - 7 * 86400000);
   const url = `${API_BASE}/v3/historical-candle/${key}/minutes/5/${todayKey}/${istDateKey(from)}`;
   const all = normalizeCandles(await fetchJson(url, timeoutMs, maxRetries));
-
   const today = all.filter((c) => c.t >= todayStart);
   const prior = all.filter((c) => c.t < todayStart);
   if (!prior.length) return { candles: today, warmup: [], levels: null };
-
   const prevDayKey = istDateKey(new Date(prior[prior.length - 1].t));
   const prevDay = prior.filter((c) => istDateKey(new Date(c.t)) === prevDayKey);
-  const levels = prevDay.length
-    ? {
-        pdh: Math.max(...prevDay.map((c) => c.h)),
-        pdl: Math.min(...prevDay.map((c) => c.l)),
-        prevClose: prevDay[prevDay.length - 1].c,
-        prevOpen: prevDay[0].o,
-        dayKey: prevDayKey,
-      }
-    : null;
-
-  return {
-    candles: today,
-    warmup: prior.slice(-160),
-    levels,
-  };
+  const levels = prevDay.length ? { pdh: Math.max(...prevDay.map((c) => c.h)), pdl: Math.min(...prevDay.map((c) => c.l)), prevClose: prevDay[prevDay.length - 1].c, prevOpen: prevDay[0].o, dayKey: prevDayKey } : null;
+  return { candles: today, warmup: prior.slice(-160), levels };
 }
 
 export async function fetchLtpBatch(instrumentKeys: string[], timeoutMs: number): Promise<Map<string, number>> {
@@ -295,16 +188,9 @@ export async function fetchLtpBatch(instrumentKeys: string[], timeoutMs: number)
     const chunk = instrumentKeys.slice(i, i + 500);
     try {
       const q = chunk.map((k) => `instrument_key=${encodeURIComponent(k)}`).join("&");
-      const payload = (await fetchJson(`${API_BASE}/v3/market-quote/ltp?${q}`, timeoutMs, 1)) as {
-        data?: Record<string, { instrument_token?: string; last_price?: number }>;
-      };
-      for (const [key, val] of Object.entries(payload?.data ?? {})) {
-        const price = val?.last_price;
-        if (typeof price === "number" && Number.isFinite(price)) out.set(key, price);
-      }
-    } catch {
-      // LTP is display-only.
-    }
+      const payload = (await fetchJson(`${API_BASE}/v3/market-quote/ltp?${q}`, timeoutMs, 1)) as { data?: Record<string, { instrument_token?: string; last_price?: number }> };
+      for (const [key, val] of Object.entries(payload?.data ?? {})) { const price = val?.last_price; if (typeof price === "number" && Number.isFinite(price)) out.set(key, price); }
+    } catch { /* LTP is display-only. */ }
   }
   return out;
 }
