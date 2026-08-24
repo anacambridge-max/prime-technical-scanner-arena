@@ -382,7 +382,7 @@ async function runScan(
    * New code writes snapshots in batches.
    */
   const dbWrites = async () => {
-    const SNAPSHOT_BATCH_SIZE = 150;
+    const SNAPSHOT_BATCH_SIZE = 25;
 
     for (
       let i = 0;
