@@ -31,7 +31,7 @@ async function fetchJson(url: string, timeoutMs: number, maxRetries: number): Pr
       if (res.status === 401) throw new UpstoxHttpError(401, "Upstox token expired or invalid");
       if (res.status === 429 || res.status >= 500) {
         const retryAfter = Number(res.headers.get("retry-after") ?? "0");
-        const delay = Math.min(Math.max(retryAfter * 1000, 250 * Math.pow(2, attempt)), 1500);
+        const delay = Math.min(Math.max(retryAfter * 1000, 250 * Math.pow(2, attempt)), 2000);
         lastErr = new UpstoxHttpError(res.status, `HTTP ${res.status}`);
         attempt++;
         if (attempt <= maxRetries) await new Promise((r) => setTimeout(r, delay));
@@ -134,9 +134,6 @@ export async function resolveInstrumentKeys(symbols: string[], timeoutMs: number
     out.set(s, found.key);
     cacheRows.push({ symbol: s, instrumentKey: found.key, name: found.name, updatedAt: now });
   }
-
-  // Cache all resolved instruments in one DB call. The old code performed one
-  // INSERT per symbol sequentially, which could exhaust Vercel's 120s runtime.
   if (cacheRows.length) {
     try { await db.insert(instrumentMap).values(cacheRows).onConflictDoNothing({ target: instrumentMap.symbol }); }
     catch { /* Cache is best-effort; resolved keys are still returned. */ }
@@ -155,6 +152,25 @@ export async function fetchIntraday5m(instrumentKey: string, timeoutMs: number, 
   throw lastErr ?? new Error("intraday fetch failed");
 }
 
+/**
+ * Fetch a compact previous-session 5-minute history window.
+ * This is deliberately retryable because the live scanner makes many
+ * concurrent Upstox requests and a single 429 must not make EMA unavailable.
+ */
+export async function fetchHistorical5m(
+  instrumentKey: string,
+  todayKey: string,
+  timeoutMs: number,
+  maxRetries: number,
+): Promise<CandlePoint[]> {
+  const key = encodeURIComponent(instrumentKey);
+  const todayStart = epochForIst(todayKey, "00:00").getTime();
+  const from = new Date(todayStart - 5 * 86400000);
+  const fromKey = istDateKey(from);
+  const url = `${API_BASE}/v3/historical-candle/${key}/minutes/5/${todayKey}/${fromKey}`;
+  return normalizeCandles(await fetchJson(url, timeoutMs, Math.max(2, maxRetries)));
+}
+
 export async function fetchPrevDayLevels(instrumentKey: string, todayKey: string, timeoutMs: number, maxRetries: number): Promise<PrevDayLevels | null> {
   const key = encodeURIComponent(instrumentKey);
   const fromDate = epochForIst(todayKey, "00:00");
@@ -168,11 +184,8 @@ export async function fetchPrevDayLevels(instrumentKey: string, todayKey: string
 }
 
 export async function fetchRecent5mWithLevels(instrumentKey: string, todayKey: string, timeoutMs: number, maxRetries: number): Promise<{ candles: CandlePoint[]; warmup: CandlePoint[]; levels: PrevDayLevels | null }> {
-  const key = encodeURIComponent(instrumentKey);
   const todayStart = epochForIst(todayKey, "00:00").getTime();
-  const from = new Date(todayStart - 7 * 86400000);
-  const url = `${API_BASE}/v3/historical-candle/${key}/minutes/5/${todayKey}/${istDateKey(from)}`;
-  const all = normalizeCandles(await fetchJson(url, timeoutMs, maxRetries));
+  const all = await fetchHistorical5m(instrumentKey, todayKey, timeoutMs, maxRetries);
   const today = all.filter((c) => c.t >= todayStart);
   const prior = all.filter((c) => c.t < todayStart);
   if (!prior.length) return { candles: today, warmup: [], levels: null };
