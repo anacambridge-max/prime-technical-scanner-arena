@@ -37,7 +37,13 @@ export const SCANNER_CONFIG = {
   riskReward: num(process.env.RISK_REWARD, 2),
   slBufferPct: num(process.env.SL_BUFFER_PCT, 0.15),
   rescanSeconds: num(process.env.RESCAN_SECONDS, 45),
-  minCandlesRequired: 5,
+
+  // A single completed 5-minute candle is enough to evaluate a symbol.
+  // Therefore the 09:15 candle becomes eligible at 09:20. This is important:
+  // do not wait for 5 completed candles (09:40) just to start showing WATCH /
+  // SETUP signals. The 20 EMA and volume reference are already warmed from
+  // previous-session candles, so opening-minute analysis is valid.
+  minCandlesRequired: 1,
 
   // Upstox standard APIs allow 50 requests/sec and 500 requests/minute.
   // Keep concurrency modest AND pace every HTTP request globally inside the
