@@ -156,19 +156,22 @@ export async function resolveInstrumentKeys(symbols: string[], timeoutMs: number
 
 export async function fetchIntraday5m(instrumentKey: string, timeoutMs: number, maxRetries: number): Promise<CandlePoint[]> {
   const key = encodeURIComponent(instrumentKey);
-  const urls = [`${API_BASE}/v3/historical-candle/intraday/${key}/minutes/5`, `${API_BASE}/v2/historical-candle/intraday/${key}/5minute`];
-  let lastErr: Error | null = null;
-  for (const url of urls) {
-    try { return normalizeCandles(await fetchJson(url, timeoutMs, maxRetries)); }
-    catch (err) { if (err instanceof UpstoxHttpError && err.status === 401) throw err; lastErr = err as Error; }
+  const v3 = `${API_BASE}/v3/historical-candle/intraday/${key}/minutes/5`;
+  try {
+    return normalizeCandles(await fetchJson(v3, timeoutMs, maxRetries));
+  } catch (err) {
+    // Do not turn a 429 into a second immediate request against another API
+    // version. That doubles the rate-limit pressure. Only fall back on a
+    // non-rate-limit endpoint failure.
+    if (err instanceof UpstoxHttpError && err.status === 429) throw err;
+    const v2 = `${API_BASE}/v2/historical-candle/intraday/${key}/5minute`;
+    return normalizeCandles(await fetchJson(v2, timeoutMs, maxRetries));
   }
-  throw lastErr ?? new Error("intraday fetch failed");
 }
 
 /**
  * Fetch a compact previous-session 5-minute history window.
- * This is deliberately retryable because the live scanner makes many
- * concurrent Upstox requests and a single 429 must not make EMA unavailable.
+ * This supplies the EMA/volume warmup and PDH/PDL levels.
  */
 export async function fetchHistorical5m(
   instrumentKey: string,
@@ -181,7 +184,7 @@ export async function fetchHistorical5m(
   const from = new Date(todayStart - 5 * 86400000);
   const fromKey = istDateKey(from);
   const url = `${API_BASE}/v3/historical-candle/${key}/minutes/5/${todayKey}/${fromKey}`;
-  return normalizeCandles(await fetchJson(url, timeoutMs, Math.max(2, maxRetries)));
+  return normalizeCandles(await fetchJson(url, timeoutMs, maxRetries));
 }
 
 export async function fetchPrevDayLevels(instrumentKey: string, todayKey: string, timeoutMs: number, maxRetries: number): Promise<PrevDayLevels | null> {
