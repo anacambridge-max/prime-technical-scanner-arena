@@ -40,13 +40,13 @@ export const SCANNER_CONFIG = {
   minCandlesRequired: 5,
 
   // Upstox standard APIs allow 50 requests/sec and 500 requests/minute.
-  // The scanner deliberately keeps concurrency below the per-second ceiling
-  // because each symbol currently needs an intraday + historical request.
-  // This prevents burst 429s while still completing a rotating batch well
-  // inside the 45-second refresh window.
-  upstoxConcurrency: 8,
+  // Keep concurrency modest AND pace every HTTP request globally inside the
+  // serverless worker. This avoids burst 429s when each symbol needs both
+  // intraday and historical candle data.
+  upstoxConcurrency: 4,
+  upstoxMinRequestIntervalMs: 120,
   requestTimeoutMs: 3000,
-  maxRetries: 2,
+  maxRetries: 1,
   eventLogLimit: 250,
 } as const;
 
