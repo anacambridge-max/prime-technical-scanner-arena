@@ -4,6 +4,7 @@ import { instrumentMap } from "@/db/schema";
 import { inArray } from "drizzle-orm";
 import type { CandlePoint, PrevDayLevels } from "./types";
 import { istTimeLabel, istDateKey, epochForIst } from "./time";
+import { SCANNER_CONFIG } from "./config";
 
 const API_BASE = "https://api.upstox.com";
 const INSTRUMENT_URLS = [
@@ -20,10 +21,22 @@ function authHeaders(): Record<string, string> {
 
 class UpstoxHttpError extends Error { constructor(public status: number, message: string) { super(message); } }
 
+// Upstox limits are per-user. A Promise-based pacing gate keeps concurrent
+// workers from creating a burst even though the scanner itself uses a pool.
+let nextRequestAt = 0;
+async function waitForRequestSlot(): Promise<void> {
+  const now = Date.now();
+  const slot = Math.max(now, nextRequestAt);
+  nextRequestAt = slot + SCANNER_CONFIG.upstoxMinRequestIntervalMs;
+  const delay = slot - now;
+  if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+}
+
 async function fetchJson(url: string, timeoutMs: number, maxRetries: number): Promise<unknown> {
   let attempt = 0;
   let lastErr: Error | null = null;
   while (attempt <= maxRetries) {
+    await waitForRequestSlot();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -31,7 +44,7 @@ async function fetchJson(url: string, timeoutMs: number, maxRetries: number): Pr
       if (res.status === 401) throw new UpstoxHttpError(401, "Upstox token expired or invalid");
       if (res.status === 429 || res.status >= 500) {
         const retryAfter = Number(res.headers.get("retry-after") ?? "0");
-        const delay = Math.min(Math.max(retryAfter * 1000, 250 * Math.pow(2, attempt)), 2000);
+        const delay = Math.min(Math.max(retryAfter * 1000, 1000), 5000);
         lastErr = new UpstoxHttpError(res.status, `HTTP ${res.status}`);
         attempt++;
         if (attempt <= maxRetries) await new Promise((r) => setTimeout(r, delay));
@@ -43,7 +56,7 @@ async function fetchJson(url: string, timeoutMs: number, maxRetries: number): Pr
       if (err instanceof UpstoxHttpError && (err.status === 401 || (err.status !== 429 && err.status < 500))) throw err;
       lastErr = err as Error;
       attempt++;
-      if (attempt <= maxRetries) await new Promise((r) => setTimeout(r, 250 * Math.pow(2, attempt)));
+      if (attempt <= maxRetries) await new Promise((r) => setTimeout(r, 500));
     } finally { clearTimeout(timer); }
   }
   throw lastErr ?? new Error("Upstox request failed");
