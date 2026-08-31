@@ -443,7 +443,7 @@ export default function Dashboard() {
         </section>
 
         <ScannerTable rows={filtered} expanded={expanded} onToggle={toggleRow} />
-        <SignalLog events={meta?.events ?? []} />
+        <SignalLog events={payload?.events ?? []} />
 
         <footer className="pb-8 pt-1 text-center text-[10px] text-slate-600">
           Prime Technical Scanner · NSE F&O stock universe · PDH/PDL + 20 EMA + volume confirmation
