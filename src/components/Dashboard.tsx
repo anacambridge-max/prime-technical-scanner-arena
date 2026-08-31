@@ -193,7 +193,6 @@ export default function Dashboard() {
         case "CHANGE":
           return (b.changePct ?? -999) - (a.changePct ?? -999);
         default:
-          // Default engine priority: status group -> level proximity -> volume -> rank.
           if (a.statusRank !== b.statusRank) return a.statusRank - b.statusRank;
           const d = byDistance(a, b);
           if (d !== 0) return d;
@@ -266,7 +265,7 @@ export default function Dashboard() {
                 </span>
               </h1>
               <p className="mono text-[9px] uppercase tracking-[0.22em] text-slate-500">
-                5-min · PDH/PDL · 20 EMA · volume confirmation
+                5-min · PDH/PDL · 20 EMA · volume confirmation · F&O ONLY
               </p>
             </div>
           </div>
@@ -326,7 +325,6 @@ export default function Dashboard() {
       </header>
 
       <main className="relative mx-auto max-w-[1680px] space-y-4 px-4 py-4 lg:px-6">
-        {/* ================= NOTICES ================= */}
         {meta?.error && (
           <div className="flex items-start gap-3 rounded-xl border border-rose-400/30 bg-rose-400/10 px-4 py-3">
             <CloudOff size={16} className="mt-0.5 shrink-0 text-rose-300" />
@@ -347,7 +345,7 @@ export default function Dashboard() {
             <Zap size={14} className="mt-0.5 shrink-0 text-fuchsia-300" />
             <div className="text-[11px] text-fuchsia-200/90">
               Simulation mode — set <span className="mono font-semibold">UPSTOX_ACCESS_TOKEN</span>{" "}
-              on the server to scan the live NIFTY 500 universe. Engine + confirmation rules are
+              on the server to scan the live NSE F&O stock universe. Engine + confirmation rules are
               identical; only the data feed changes. See the SETUP GUIDE.
             </div>
           </div>
@@ -377,9 +375,9 @@ export default function Dashboard() {
             accent="bg-gradient-to-r from-sky-400 to-cyan-300"
           />
           <StatCard
-            label="NIFTY 500 Universe"
+            label="F&O Stock Universe"
             value={String(meta?.universeSize ?? 0)}
-            sub={`processed ${meta?.processed ?? 0} · errors ${meta?.errorCount ?? 0}`}
+            sub={`NSE F&O only · processed ${meta?.processed ?? 0} · errors ${meta?.errorCount ?? 0}`}
             icon={<Database size={15} className="text-slate-400" />}
             accent="bg-gradient-to-r from-slate-400 to-slate-500"
           />
@@ -401,160 +399,54 @@ export default function Dashboard() {
             </span>
 
             <div className="select-wrap">
-              <select
-                className="term-select"
-                value={filters.status}
-                onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}
-              >
-                <option value="ALL">Status: All</option>
-                <option value="CONFIRMED">Confirmed</option>
-                <option value="SETUP">Setup</option>
-                <option value="WATCH">Watch</option>
+              <select className="term-select" value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}>
+                <option value="ALL">Status: All</option><option value="CONFIRMED">Confirmed</option><option value="SETUP">Setup</option><option value="WATCH">Watch</option>
               </select>
             </div>
-
             <div className="select-wrap">
-              <select
-                className="term-select"
-                value={filters.direction}
-                onChange={(e) => setFilters((f) => ({ ...f, direction: e.target.value }))}
-              >
-                <option value="ALL">Direction: All</option>
-                <option value="BUY">Buy</option>
-                <option value="SELL">Sell</option>
+              <select className="term-select" value={filters.direction} onChange={(e) => setFilters((f) => ({ ...f, direction: e.target.value }))}>
+                <option value="ALL">Direction: All</option><option value="BUY">Buy</option><option value="SELL">Sell</option>
               </select>
             </div>
-
             <div className="select-wrap">
-              <select
-                className="term-select"
-                value={filters.level}
-                onChange={(e) => setFilters((f) => ({ ...f, level: e.target.value }))}
-              >
-                <option value="ALL">Level: All</option>
-                <option value="PDH">PDH</option>
-                <option value="PDL">PDL</option>
+              <select className="term-select" value={filters.level} onChange={(e) => setFilters((f) => ({ ...f, level: e.target.value }))}>
+                <option value="ALL">Level: All</option><option value="PDH">PDH</option><option value="PDL">PDL</option>
               </select>
             </div>
-
             <div className="select-wrap">
-              <select
-                className="term-select"
-                value={String(filters.vol)}
-                onChange={(e) => setFilters((f) => ({ ...f, vol: Number(e.target.value) }))}
-              >
-                <option value="0">Volume: All</option>
-                <option value="1.5">≥ 1.5x Strong</option>
-                <option value="2">≥ 2x High</option>
-                <option value="4">≥ 4x Very High</option>
-                <option value="6">≥ 6x Extreme</option>
+              <select className="term-select" value={String(filters.vol)} onChange={(e) => setFilters((f) => ({ ...f, vol: Number(e.target.value) }))}>
+                <option value="0">Volume: All</option><option value="1.5">≥ 1.5x Strong</option><option value="2">≥ 2x High</option><option value="4">≥ 4x Very High</option><option value="6">≥ 6x Extreme</option>
               </select>
             </div>
-
             <div className="select-wrap">
-              <select
-                className="term-select"
-                value={filters.setup}
-                onChange={(e) => setFilters((f) => ({ ...f, setup: e.target.value }))}
-              >
-                <option value="ALL">Setup: All</option>
-                <option value="PDH_BUY">PDH Buy</option>
-                <option value="PDL_SELL">PDL Sell</option>
-                <option value="BUY_CONTINUATION">Buy Continuation</option>
-                <option value="SELL_CONTINUATION">Sell Continuation</option>
+              <select className="term-select" value={filters.setup} onChange={(e) => setFilters((f) => ({ ...f, setup: e.target.value }))}>
+                <option value="ALL">Setup: All</option><option value="PDH_BUY">PDH Buy</option><option value="PDL_SELL">PDL Sell</option><option value="BUY_CONTINUATION">Buy Continuation</option><option value="SELL_CONTINUATION">Sell Continuation</option>
               </select>
             </div>
-
             <div className="select-wrap">
-              <select
-                className="term-select"
-                value={filters.sort}
-                onChange={(e) => setFilters((f) => ({ ...f, sort: e.target.value }))}
-              >
-                <option value="PRIORITY">Sort: Engine Priority</option>
-                <option value="VOLUME">Sort: Volume Multiple</option>
-                <option value="DISTANCE">Sort: Level Distance</option>
-                <option value="CHANGE">Sort: % Change</option>
+              <select className="term-select" value={filters.sort} onChange={(e) => setFilters((f) => ({ ...f, sort: e.target.value }))}>
+                <option value="PRIORITY">Sort: Engine Priority</option><option value="VOLUME">Sort: Volume Multiple</option><option value="DISTANCE">Sort: Level Distance</option><option value="CHANGE">Sort: % Change</option>
               </select>
             </div>
 
-            <div className="relative">
-              <Search size={11} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
-              <input
-                className="term-input w-36 pl-7"
-                placeholder="SYMBOL"
-                value={filters.query}
-                onChange={(e) => setFilters((f) => ({ ...f, query: e.target.value }))}
-              />
+            <div className="relative min-w-[150px] flex-1 sm:flex-none">
+              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-600" />
+              <input className="term-input pl-7" placeholder="SYMBOL" value={filters.query} onChange={(e) => setFilters((f) => ({ ...f, query: e.target.value }))} />
             </div>
-
             <div className="ml-auto flex items-center gap-2">
-              <span className="mono text-[10px] text-slate-500">
-                {filtered.length}/{payload?.rows.length ?? 0} rows
-              </span>
-              <button
-                onClick={exportCsv}
-                className="flex items-center gap-1.5 rounded-md border border-[#243148] bg-[#0b1220] px-2.5 py-1.5 text-[10px] font-semibold tracking-widest text-slate-300 transition-colors hover:border-emerald-400/40 hover:text-emerald-300"
-              >
-                <Download size={11} />
-                CSV
+              <span className="mono text-[10px] text-slate-500">{filtered.length}/{payload?.rows.length ?? 0} rows</span>
+              <button onClick={exportCsv} className="flex items-center gap-1.5 rounded-md border border-[#26334b] bg-[#0c1422] px-2.5 py-1.5 text-[10px] font-semibold tracking-widest text-slate-400 hover:border-sky-400/30 hover:text-sky-300">
+                <Download size={11} /> CSV
               </button>
             </div>
           </div>
         </section>
 
-        {/* ================= TABLE ================= */}
-        <section className="overflow-hidden rounded-xl border border-[#1b2537] bg-[#070d18]/80">
-          {loading && !payload ? (
-            <div className="flex flex-col items-center gap-3 px-6 py-24">
-              <RefreshCw size={22} className="animate-spin text-sky-300" />
-              <div className="mono text-[11px] uppercase tracking-[0.2em] text-slate-500">
-                booting scanner…
-              </div>
-            </div>
-          ) : (
-            <ScannerTable rows={filtered} expanded={expanded} onToggle={toggleRow} />
-          )}
-        </section>
+        <ScannerTable rows={filtered} expanded={expanded} onToggle={toggleRow} />
+        <SignalLog events={meta?.events ?? []} />
 
-        {/* ================= EVENT LOG ================= */}
-        <SignalLog events={payload?.events ?? []} />
-
-        {/* ================= FOOTER ================= */}
-        <footer className="rounded-xl border border-[#141d30] bg-[#080d18]/60 px-4 py-4">
-          <div className="grid gap-3 text-[10px] leading-relaxed text-slate-500 md:grid-cols-3">
-            <div>
-              <span className="font-semibold uppercase tracking-widest text-slate-400">
-                Confirmation rules
-              </span>
-              <p className="mt-1">
-                CONFIRMED requires: valid PDH/PDL → completed 5-min close beyond the level →
-                volume ≥ {meta?.config.breakoutVolMin ?? 1.5}x vs rolling{" "}
-                {meta?.config.volRefCandles ?? 20}-candle reference → 20 EMA alignment →
-                follow-through holding the level. Failed breaks are never confirmed.
-              </p>
-            </div>
-            <div>
-              <span className="font-semibold uppercase tracking-widest text-slate-400">
-                Data safety
-              </span>
-              <p className="mt-1">
-                All Upstox calls run server-side; the access token never reaches the browser.
-                Per-symbol failures are isolated. A failed scan never clears the previous good
-                results — they persist for the full trading day.
-              </p>
-            </div>
-            <div>
-              <span className="font-semibold uppercase tracking-widest text-slate-400">
-                Disclaimer
-              </span>
-              <p className="mt-1">
-                Scanner only — no orders are placed. Entry/SL/Target (default 1:2 RR) are
-                informational levels, not advice. Verify every signal on your own charts before
-                acting.
-              </p>
-            </div>
-          </div>
+        <footer className="pb-8 pt-1 text-center text-[10px] text-slate-600">
+          Prime Technical Scanner · NSE F&O stock universe · PDH/PDL + 20 EMA + volume confirmation
         </footer>
       </main>
     </div>
