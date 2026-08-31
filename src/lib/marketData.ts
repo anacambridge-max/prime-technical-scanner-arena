@@ -10,29 +10,20 @@ export interface CollectOptions { concurrency: number; requestTimeoutMs: number;
 
 function completedOnly(candles: CandlePoint[], cutoff: Date, timeframeMinutes: number): CandlePoint[] { return candles.filter((c) => isCandleCompleted(c.t, timeframeMinutes, cutoff)); }
 
-// Keep each serverless invocation small enough for Vercel Hobby. The Nifty
-// universe is scanned in six deterministic batches. During the live window the
-// batch rotates automatically; after 10:00 the replay path explicitly requests
-// the next batch so every part of the universe can still be persisted.
-const LIVE_BATCH_COUNT = 6;
-const LIVE_BATCH_WINDOW_MS = 45_000;
-
-function rotatingBatch<T>(items: T[], explicitIndex?: number): T[] {
-  if (items.length <= 1) return items;
-  const batchIndex = explicitIndex == null
-    ? Math.floor(Date.now() / LIVE_BATCH_WINDOW_MS) % LIVE_BATCH_COUNT
-    : Math.max(0, explicitIndex) % LIVE_BATCH_COUNT;
-  const batchSize = Math.ceil(items.length / LIVE_BATCH_COUNT);
-  const start = batchIndex * batchSize;
-  return items.slice(start, Math.min(start + batchSize, items.length));
-}
-
 async function collectLive(symbols: string[], dateKey: string, cutoff: Date, opts: CollectOptions): Promise<CollectedMarketData> {
   const notes: string[] = [];
-  const batch = rotatingBatch(symbols, opts.batchIndex);
+
+  // The full NSE F&O universe is evaluated on every live pass. The candle
+  // bootstrap now uses one historical-5m request per symbol, so rotating
+  // through six partial batches is no longer necessary and caused valid
+  // signals to be missed for symbols outside the current batch.
+  const batch = symbols;
   const feeds: SymbolFeed[] = batch.map((symbol) => ({ symbol, candles: [], warmup: [], levels: null, ltp: null, error: null }));
+
   let keys: Map<string, string> = new Map();
-  try { keys = await resolveInstrumentKeys(batch, opts.requestTimeoutMs); } catch (err) { notes.push(`instrument resolution failed: ${(err as Error).message}`); }
+  try { keys = await resolveInstrumentKeys(batch, opts.requestTimeoutMs); }
+  catch (err) { notes.push(`instrument resolution failed: ${(err as Error).message}`); }
+
   const deadline = Date.now() + opts.budgetMs;
   await mapPool(feeds, opts.concurrency, async (feed) => {
     if (Date.now() >= deadline) { feed.error = "scan budget exceeded"; return; }
@@ -46,21 +37,30 @@ async function collectLive(symbols: string[], dateKey: string, cutoff: Date, opt
       if (feed.candles.length === 0) feed.error = "no usable completed 5-minute candles";
     } catch (err) { feed.error = (err as Error).message; }
   });
+
+  // LTP is display-only and is requested once for the whole F&O universe.
   try {
     const keyList = batch.map((s) => keys.get(s)).filter((k): k is string => Boolean(k));
     const ltpByKey = await fetchLtpBatch(keyList, Math.min(opts.requestTimeoutMs, 1500));
-    for (const feed of feeds) { const key = keys.get(feed.symbol); if (key && ltpByKey.has(key)) feed.ltp = ltpByKey.get(key) ?? null; }
+    for (const feed of feeds) {
+      const key = keys.get(feed.symbol);
+      if (key && ltpByKey.has(key)) feed.ltp = ltpByKey.get(key) ?? null;
+    }
   } catch { /* LTP is display-only. */ }
+
   const resolved = feeds.filter((f) => f.candles.length > 0 && f.levels).length;
-  const batchLabel = opts.batchIndex == null ? "rotating" : `replay ${opts.batchIndex + 1}/${LIVE_BATCH_COUNT}`;
-  notes.push(`upstox ${batchLabel} batch: ${batch.length}/${symbols.length}; usable: ${resolved}/${feeds.length}`);
+  notes.push(`upstox full F&O batch: ${batch.length}/${symbols.length}; usable: ${resolved}/${feeds.length}`);
   return { feeds, source: "UPSTOX", notes };
 }
 
 function collectSimulated(symbols: string[], dateKey: string, cutoff: Date): CollectedMarketData {
   const feeds: SymbolFeed[] = symbols.map((symbol) => {
-    try { const sim = simulateSymbol(symbol, dateKey, cutoff.getTime()); return { symbol, candles: sim.candles, warmup: sim.warmup, levels: sim.levels, ltp: sim.candles.length ? sim.candles[sim.candles.length - 1].c : null, error: null }; }
-    catch (err) { return { symbol, candles: [], warmup: [], levels: null, ltp: null, error: `simulation failed: ${(err as Error).message}` }; }
+    try {
+      const sim = simulateSymbol(symbol, dateKey, cutoff.getTime());
+      return { symbol, candles: sim.candles, warmup: sim.warmup, levels: sim.levels, ltp: sim.candles.length ? sim.candles[sim.candles.length - 1].c : null, error: null };
+    } catch (err) {
+      return { symbol, candles: [], warmup: [], levels: null, ltp: null, error: `simulation failed: ${(err as Error).message}` };
+    }
   });
   return { feeds, source: "SIMULATION", notes: ["deterministic simulation feed"] };
 }
@@ -68,5 +68,11 @@ function collectSimulated(symbols: string[], dateKey: string, cutoff: Date): Col
 export async function collectMarketData(symbols: string[], dateKey: string, cutoff: Date, opts: CollectOptions): Promise<CollectedMarketData> {
   if (!upstoxConfigured()) return collectSimulated(symbols, dateKey, cutoff);
   try { return await collectLive(symbols, dateKey, cutoff, opts); }
-  catch (err) { return { feeds: symbols.map((symbol) => ({ symbol, candles: [], warmup: [], levels: null, ltp: null, error: `upstox collection failed: ${(err as Error).message}` })), source: "UPSTOX", notes: ["live collection failed; previous persisted scan is preserved"] }; }
+  catch (err) {
+    return {
+      feeds: symbols.map((symbol) => ({ symbol, candles: [], warmup: [], levels: null, ltp: null, error: `upstox collection failed: ${(err as Error).message}` })),
+      source: "UPSTOX",
+      notes: ["live collection failed; previous persisted scan is preserved"],
+    };
+  }
 }
