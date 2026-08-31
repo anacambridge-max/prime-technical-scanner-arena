@@ -1,0 +1,46 @@
+name: Fix SignalLog type error
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fix Dashboard type error
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/components/Dashboard.tsx')
+          s = p.read_text()
+          old = '<SignalLog events={meta?.events ?? []} />'
+          new = '<SignalLog events={payload?.events ?? []} />'
+          if old in s:
+              p.write_text(s.replace(old, new))
+              print('Fixed SignalLog events source: meta -> payload')
+          else:
+              print('Target line already fixed or not present')
+          PY
+
+      - name: Commit fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/components/Dashboard.tsx
+          if git diff --cached --quiet; then
+            echo 'No changes to commit'
+          else
+            git commit -m 'Fix SignalLog ScanMeta type error'
+            git push origin main
+          fi
