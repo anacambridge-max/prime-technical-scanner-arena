@@ -1,19 +1,14 @@
 import type { PrevDayLevels, CandlePoint } from "./types";
-import { fetchHistorical5m } from "./upstox";
+import { fetchHistorical5m, fetchIntraday5m } from "./upstox";
 
 /**
  * Fast bootstrap for the live scanner.
  *
- * One V3 historical 5m request supplies BOTH:
- *   1) today's completed 5m candles;
- *   2) previous-session candles used to warm the 20 EMA/volume reference and
- *      calculate PDH/PDL.
- *
- * The previous implementation made a second intraday request for every stock.
- * Across the 206-stock F&O universe that doubled the Upstox request load and
- * forced the scanner to rotate through only a fraction of the universe per
- * 45-second pass. Keeping this path to one candle request per symbol lets the
- * full F&O universe be evaluated inside the serverless time budget.
+ * Historical V3 is used for previous-session warmup + PDH/PDL. The current
+ * session is explicitly sourced from Upstox's intraday V3 endpoint when the
+ * historical response does not contain today's candles. This matters because
+ * the scanner must see the first completed 5-minute candle at 09:20 rather
+ * than waiting for the historical endpoint to expose the current session.
  */
 export async function fetchRecent5mWithLevelsFast(
   instrumentKey: string,
@@ -30,8 +25,20 @@ export async function fetchRecent5mWithLevelsFast(
     Math.max(2, maxRetries),
   );
 
-  const today = historical.filter((c) => c.t >= todayStart);
+  let today = historical.filter((c) => c.t >= todayStart);
   const prior = historical.filter((c) => c.t < todayStart);
+
+  // V3 intraday is the authoritative current-session feed. Use it whenever
+  // historical V3 has not yet exposed today's candles (or returns a stale
+  // current-session slice). This keeps 09:20/09:25/... signals live.
+  if (today.length === 0) {
+    try {
+      const intraday = await fetchIntraday5m(instrumentKey, timeoutMs, maxRetries);
+      today = intraday.filter((c) => c.t >= todayStart);
+    } catch {
+      // Preserve the historical result/error path if intraday is unavailable.
+    }
+  }
 
   if (!prior.length) {
     return { candles: today, warmup: [], levels: null };
