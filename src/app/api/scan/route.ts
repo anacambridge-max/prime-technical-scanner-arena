@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDashboardPayload } from "@/lib/scanner";
-import { getLockedDashboardPayload } from "@/lib/lockedDashboard";
 import { marketPhase } from "@/lib/time";
 import { SCANNER_CONFIG } from "@/lib/config";
 import { upstoxConfigured } from "@/lib/upstox";
@@ -35,7 +34,7 @@ function busyPayload(): ScanPayload {
       ok: true,
       scanDate: "",
       nowIst: "",
-      marketPhase: "LIVE_SCAN",
+      marketPhase: marketPhase(new Date(), SCANNER_CONFIG),
       source: upstoxConfigured() ? "UPSTOX" : "SIMULATION",
       ranScan: false,
       lastScanAt: null,
@@ -48,12 +47,12 @@ function busyPayload(): ScanPayload {
       message: "Initial scan is in progress…",
       error: null,
       config: {
-        scanStart: "09:15",
-        scanEnd: "10:00",
-        rescanSeconds: 45,
-        volRefCandles: 20,
-        breakoutVolMin: 1.5,
-        riskReward: 2,
+        scanStart: SCANNER_CONFIG.scanStart,
+        scanEnd: SCANNER_CONFIG.scanEnd,
+        rescanSeconds: SCANNER_CONFIG.rescanSeconds,
+        volRefCandles: SCANNER_CONFIG.volumeRefCandles,
+        breakoutVolMin: SCANNER_CONFIG.breakoutVolMin,
+        riskReward: SCANNER_CONFIG.riskReward,
       },
     },
     rows: [],
@@ -62,9 +61,6 @@ function busyPayload(): ScanPayload {
 }
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
-  // `force=1` is intentionally ignored after the live scan window.
-  // This prevents the Refresh button from accidentally starting the old
-  // expensive Upstox replay after 10:00 IST.
   const force = req.nextUrl.searchParams.get("force") === "1";
 
   try {
@@ -74,15 +70,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       });
     }
 
-    const phase = marketPhase(new Date(), SCANNER_CONFIG);
-
-    // HARD SAFETY RULE:
-    // Once the 09:15–10:00 IST live window has ended, every request —
-    // including ?force=1 — is read-only. Never start a fresh Upstox scan.
-    const work = phase === "SCAN_ENDED"
-      ? getLockedDashboardPayload()
-      : getDashboardPayload(force);
-
+    /*
+     * Always use the main scanner orchestration here, including after 10:00.
+     * getDashboardPayload() intentionally uses the 09:15–10:00 candle cutoff
+     * and, when needed, completes the persisted replay batches after the live
+     * window. This prevents the API from falling back to yesterday's snapshot
+     * simply because today's live scan was not started while the page was open.
+     */
+    const work = getDashboardPayload(force);
     runtime.__arenaScanInFlight = work;
     const payload = await work;
     runtime.__arenaLastPayload = payload;
@@ -110,12 +105,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           message: null,
           error: `Scanner backend error: ${(err as Error).message}`,
           config: {
-            scanStart: "09:15",
-            scanEnd: "10:00",
-            rescanSeconds: 45,
-            volRefCandles: 20,
-            breakoutVolMin: 1.5,
-            riskReward: 2,
+            scanStart: SCANNER_CONFIG.scanStart,
+            scanEnd: SCANNER_CONFIG.scanEnd,
+            rescanSeconds: SCANNER_CONFIG.rescanSeconds,
+            volRefCandles: SCANNER_CONFIG.volumeRefCandles,
+            breakoutVolMin: SCANNER_CONFIG.breakoutVolMin,
+            riskReward: SCANNER_CONFIG.riskReward,
           },
         },
         rows: [],
