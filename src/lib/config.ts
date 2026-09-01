@@ -31,7 +31,11 @@ export const SCANNER_CONFIG = {
   breakoutVolMin: num(process.env.BREAKOUT_VOL_MIN, 1.5),
   continuationVolMin: num(process.env.CONTINUATION_VOL_MIN, 1.5),
   nearLevelPct: num(process.env.NEAR_LEVEL_PCT, 0.75),
-  followThroughCandles: num(process.env.FOLLOW_THROUGH_CANDLES, 1),
+  // Bullish PDH breakouts are confirmed on the first completed 5-minute
+  // candle itself when volume + 20 EMA conditions are satisfied. No extra
+  // follow-through candle is required. A later close back below PDH still
+  // invalidates the signal through the engine's failure check.
+  followThroughCandles: num(process.env.FOLLOW_THROUGH_CANDLES, 0),
   retestPct: num(process.env.RETEST_PCT, 0.35),
   continuationLookback: 12,
   riskReward: num(process.env.RISK_REWARD, 2),
