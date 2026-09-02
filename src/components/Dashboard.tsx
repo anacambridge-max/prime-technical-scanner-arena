@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import type { ScanPayload, ScanRow } from "@/lib/types";
 import { setupBadge } from "@/lib/labels";
+import { rankScanRow } from "@/lib/ranking";
 import { ScannerTable } from "./ScannerTable";
 import { SignalLog } from "./SignalLog";
 
@@ -116,7 +117,7 @@ export default function Dashboard() {
     vol: 0,
     setup: "ALL",
     query: "",
-    sort: "PRIORITY",
+    sort: "PRIME",
   });
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -186,6 +187,12 @@ export default function Dashboard() {
       Math.abs(a.distancePct ?? 999) - Math.abs(b.distancePct ?? 999);
     rows = [...rows].sort((a, b) => {
       switch (filters.sort) {
+        case "PRIME": {
+          const scoreDiff = rankScanRow(b) - rankScanRow(a);
+          if (scoreDiff !== 0) return scoreDiff;
+          if (a.statusRank !== b.statusRank) return a.statusRank - b.statusRank;
+          return byVolume(a, b);
+        }
         case "VOLUME":
           return byVolume(a, b) || a.statusRank - b.statusRank;
         case "DISTANCE":
@@ -193,10 +200,7 @@ export default function Dashboard() {
         case "CHANGE":
           return (b.changePct ?? -999) - (a.changePct ?? -999);
         default:
-          if (a.statusRank !== b.statusRank) return a.statusRank - b.statusRank;
-          const d = byDistance(a, b);
-          if (d !== 0) return d;
-          return byVolume(a, b);
+          return rankScanRow(b) - rankScanRow(a) || a.statusRank - b.statusRank;
       }
     });
     return rows;
@@ -205,13 +209,14 @@ export default function Dashboard() {
   const exportCsv = useCallback(() => {
     if (!filtered.length) return;
     const head = [
-      "STOCK", "LTP", "CHANGE%", "VOLUME_X", "EMA20", "EMA_BIAS", "PDH", "PDL",
+      "STOCK", "PRIME_SCORE", "LTP", "CHANGE%", "VOLUME_X", "EMA20", "EMA_BIAS", "PDH", "PDL",
       "LEVEL", "DISTANCE%", "SETUP", "STATUS", "ENTRY", "SL", "TARGET", "REASON",
     ];
     const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
     const lines = filtered.map((r) =>
       [
         r.symbol,
+        String(rankScanRow(r)),
         r.ltp?.toFixed(2) ?? "",
         r.changePct?.toFixed(2) ?? "",
         r.volumeMultiple?.toFixed(1) ?? "",
@@ -247,7 +252,6 @@ export default function Dashboard() {
     <div className="relative min-h-screen">
       <div className="grid-overlay pointer-events-none absolute inset-0" />
 
-      {/* ================= HEADER ================= */}
       <header className="sticky top-0 z-40 border-b border-[#16203a] bg-[#04070d]/85 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1680px] flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 lg:px-6">
           <div className="flex items-center gap-3">
@@ -265,25 +269,21 @@ export default function Dashboard() {
                 </span>
               </h1>
               <p className="mono text-[9px] uppercase tracking-[0.22em] text-slate-500">
-                5-min · PDH/PDL · 20 EMA · volume confirmation · F&O ONLY
+                5-min · PDH/PDL · 20 EMA · volume confirmation · PRIME QUALITY RANKING · F&O ONLY
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-bold tracking-widest ${phase.cls}`}
-            >
+            <span className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-bold tracking-widest ${phase.cls}`}>
               <span className={`h-1.5 w-1.5 rounded-full ${phase.dot}`} />
               {phase.label}
             </span>
-            <span
-              className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-bold tracking-widest ${
-                meta?.source === "UPSTOX"
-                  ? "border-emerald-400/30 bg-emerald-400/5 text-emerald-300"
-                  : "border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-300"
-              }`}
-            >
+            <span className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-bold tracking-widest ${
+              meta?.source === "UPSTOX"
+                ? "border-emerald-400/30 bg-emerald-400/5 text-emerald-300"
+                : "border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-300"
+            }`}>
               <Database size={11} />
               {meta?.source === "UPSTOX" ? "UPSTOX LIVE" : "SIMULATION MODE"}
             </span>
@@ -302,21 +302,10 @@ export default function Dashboard() {
                 last scan {meta?.lastScanAt ?? "—"}
               </div>
             </div>
-            <a
-              href="/guide"
-              className="flex items-center gap-1.5 rounded-md border border-[#243148] bg-[#0b1220] px-2.5 py-1.5 text-[10px] font-semibold tracking-widest text-slate-300 transition-colors hover:border-sky-400/40 hover:text-sky-300"
-            >
-              <BookOpen size={12} />
-              SETUP GUIDE
+            <a href="/guide" className="flex items-center gap-1.5 rounded-md border border-[#243148] bg-[#0b1220] px-2.5 py-1.5 text-[10px] font-semibold tracking-widest text-slate-300 transition-colors hover:border-sky-400/40 hover:text-sky-300">
+              <BookOpen size={12} /> SETUP GUIDE
             </a>
-            <button
-              onClick={() => {
-                setRefreshing(true);
-                load(true);
-              }}
-              disabled={refreshing}
-              className="flex items-center gap-1.5 rounded-md border border-sky-400/40 bg-sky-400/10 px-3 py-1.5 text-[10px] font-bold tracking-widest text-sky-300 transition-all hover:bg-sky-400/20 disabled:opacity-50"
-            >
+            <button onClick={() => { setRefreshing(true); load(true); }} disabled={refreshing} className="flex items-center gap-1.5 rounded-md border border-sky-400/40 bg-sky-400/10 px-3 py-1.5 text-[10px] font-bold tracking-widest text-sky-300 transition-all hover:bg-sky-400/20 disabled:opacity-50">
               <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
               {refreshing ? "SCANNING" : "REFRESH"}
             </button>
@@ -328,10 +317,7 @@ export default function Dashboard() {
         {meta?.error && (
           <div className="flex items-start gap-3 rounded-xl border border-rose-400/30 bg-rose-400/10 px-4 py-3">
             <CloudOff size={16} className="mt-0.5 shrink-0 text-rose-300" />
-            <div>
-              <div className="text-[12px] font-semibold text-rose-200">DATA ERROR</div>
-              <div className="text-[11px] text-rose-200/80">{meta.error}</div>
-            </div>
+            <div><div className="text-[12px] font-semibold text-rose-200">DATA ERROR</div><div className="text-[11px] text-rose-200/80">{meta.error}</div></div>
           </div>
         )}
         {meta?.message && !meta.error && (
@@ -344,110 +330,36 @@ export default function Dashboard() {
           <div className="flex items-start gap-3 rounded-xl border border-fuchsia-400/25 bg-fuchsia-400/5 px-4 py-2.5">
             <Zap size={14} className="mt-0.5 shrink-0 text-fuchsia-300" />
             <div className="text-[11px] text-fuchsia-200/90">
-              Simulation mode — set <span className="mono font-semibold">UPSTOX_ACCESS_TOKEN</span>{" "}
-              on the server to scan the live NSE F&O stock universe. Engine + confirmation rules are
-              identical; only the data feed changes. See the SETUP GUIDE.
+              Simulation mode — set <span className="mono font-semibold">UPSTOX_ACCESS_TOKEN</span> on the server to scan the live NSE F&O stock universe. Engine + confirmation rules are identical; only the data feed changes. See the SETUP GUIDE.
             </div>
           </div>
         )}
 
-        {/* ================= STAT CARDS ================= */}
         <div className="fade-stagger grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-          <StatCard
-            label="Confirmed"
-            value={String(meta?.counts.confirmed ?? 0)}
-            sub="verified PDH/PDL moves with follow-through"
-            icon={<CheckCircle2 size={15} className="text-emerald-300" />}
-            accent="bg-gradient-to-r from-emerald-400 to-teal-300"
-          />
-          <StatCard
-            label="Setups"
-            value={String(meta?.counts.setups ?? 0)}
-            sub="level reaction started · confirmation pending"
-            icon={<Crosshair size={15} className="text-amber-300" />}
-            accent="bg-gradient-to-r from-amber-400 to-orange-300"
-          />
-          <StatCard
-            label="Watch"
-            value={String(meta?.counts.watch ?? 0)}
-            sub="approaching PDH/PDL · conditions developing"
-            icon={<Eye size={15} className="text-sky-300" />}
-            accent="bg-gradient-to-r from-sky-400 to-cyan-300"
-          />
-          <StatCard
-            label="F&O Stock Universe"
-            value={String(meta?.universeSize ?? 0)}
-            sub={`NSE F&O only · processed ${meta?.processed ?? 0} · errors ${meta?.errorCount ?? 0}`}
-            icon={<Database size={15} className="text-slate-400" />}
-            accent="bg-gradient-to-r from-slate-400 to-slate-500"
-          />
-          <StatCard
-            label="Last Update"
-            value={meta?.lastScanAt ?? "—"}
-            sub={`auto-refresh ${pollSeconds}s · ${meta?.scanDate ?? ""}`}
-            icon={<Clock3 size={15} className="text-slate-400" />}
-            accent="bg-gradient-to-r from-indigo-400 to-violet-400"
-          />
+          <StatCard label="Confirmed" value={String(meta?.counts.confirmed ?? 0)} sub="verified PDH/PDL moves with follow-through" icon={<CheckCircle2 size={15} className="text-emerald-300" />} accent="bg-gradient-to-r from-emerald-400 to-teal-300" />
+          <StatCard label="Setups" value={String(meta?.counts.setups ?? 0)} sub="level reaction started · confirmation pending" icon={<Crosshair size={15} className="text-amber-300" />} accent="bg-gradient-to-r from-amber-400 to-orange-300" />
+          <StatCard label="Watch" value={String(meta?.counts.watch ?? 0)} sub="approaching PDH/PDL · conditions developing" icon={<Eye size={15} className="text-sky-300" />} accent="bg-gradient-to-r from-sky-400 to-cyan-300" />
+          <StatCard label="F&O Stock Universe" value={String(meta?.universeSize ?? 0)} sub={`NSE F&O only · processed ${meta?.processed ?? 0} · errors ${meta?.errorCount ?? 0}`} icon={<Database size={15} className="text-slate-400" />} accent="bg-gradient-to-r from-slate-400 to-slate-500" />
+          <StatCard label="Last Update" value={meta?.lastScanAt ?? "—"} sub={`auto-refresh ${pollSeconds}s · ${meta?.scanDate ?? ""}`} icon={<Clock3 size={15} className="text-slate-400" />} accent="bg-gradient-to-r from-indigo-400 to-violet-400" />
         </div>
 
-        {/* ================= FILTER BAR ================= */}
         <section className="rounded-xl border border-[#1b2537] bg-[#0a101c]/70 px-3 py-2.5">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-              <ListFilter size={12} className="text-sky-300" />
-              Filters
-            </span>
-
-            <div className="select-wrap">
-              <select className="term-select" value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}>
-                <option value="ALL">Status: All</option><option value="CONFIRMED">Confirmed</option><option value="SETUP">Setup</option><option value="WATCH">Watch</option>
-              </select>
-            </div>
-            <div className="select-wrap">
-              <select className="term-select" value={filters.direction} onChange={(e) => setFilters((f) => ({ ...f, direction: e.target.value }))}>
-                <option value="ALL">Direction: All</option><option value="BUY">Buy</option><option value="SELL">Sell</option>
-              </select>
-            </div>
-            <div className="select-wrap">
-              <select className="term-select" value={filters.level} onChange={(e) => setFilters((f) => ({ ...f, level: e.target.value }))}>
-                <option value="ALL">Level: All</option><option value="PDH">PDH</option><option value="PDL">PDL</option>
-              </select>
-            </div>
-            <div className="select-wrap">
-              <select className="term-select" value={String(filters.vol)} onChange={(e) => setFilters((f) => ({ ...f, vol: Number(e.target.value) }))}>
-                <option value="0">Volume: All</option><option value="1.5">≥ 1.5x Strong</option><option value="2">≥ 2x High</option><option value="4">≥ 4x Very High</option><option value="6">≥ 6x Extreme</option>
-              </select>
-            </div>
-            <div className="select-wrap">
-              <select className="term-select" value={filters.setup} onChange={(e) => setFilters((f) => ({ ...f, setup: e.target.value }))}>
-                <option value="ALL">Setup: All</option><option value="PDH_BUY">PDH Buy</option><option value="PDL_SELL">PDL Sell</option><option value="BUY_CONTINUATION">Buy Continuation</option><option value="SELL_CONTINUATION">Sell Continuation</option>
-              </select>
-            </div>
-            <div className="select-wrap">
-              <select className="term-select" value={filters.sort} onChange={(e) => setFilters((f) => ({ ...f, sort: e.target.value }))}>
-                <option value="PRIORITY">Sort: Engine Priority</option><option value="VOLUME">Sort: Volume Multiple</option><option value="DISTANCE">Sort: Level Distance</option><option value="CHANGE">Sort: % Change</option>
-              </select>
-            </div>
-
-            <div className="relative min-w-[150px] flex-1 sm:flex-none">
-              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-600" />
-              <input className="term-input pl-7" placeholder="SYMBOL" value={filters.query} onChange={(e) => setFilters((f) => ({ ...f, query: e.target.value }))} />
-            </div>
-            <div className="ml-auto flex items-center gap-2">
-              <span className="mono text-[10px] text-slate-500">{filtered.length}/{payload?.rows.length ?? 0} rows</span>
-              <button onClick={exportCsv} className="flex items-center gap-1.5 rounded-md border border-[#26334b] bg-[#0c1422] px-2.5 py-1.5 text-[10px] font-semibold tracking-widest text-slate-400 hover:border-sky-400/30 hover:text-sky-300">
-                <Download size={11} /> CSV
-              </button>
-            </div>
+            <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500"><ListFilter size={12} className="text-sky-300" /> Filters</span>
+            <div className="select-wrap"><select className="term-select" value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}><option value="ALL">Status: All</option><option value="CONFIRMED">Confirmed</option><option value="SETUP">Setup</option><option value="WATCH">Watch</option></select></div>
+            <div className="select-wrap"><select className="term-select" value={filters.direction} onChange={(e) => setFilters((f) => ({ ...f, direction: e.target.value }))}><option value="ALL">Direction: All</option><option value="BUY">Buy</option><option value="SELL">Sell</option></select></div>
+            <div className="select-wrap"><select className="term-select" value={filters.level} onChange={(e) => setFilters((f) => ({ ...f, level: e.target.value }))}><option value="ALL">Level: All</option><option value="PDH">PDH</option><option value="PDL">PDL</option></select></div>
+            <div className="select-wrap"><select className="term-select" value={String(filters.vol)} onChange={(e) => setFilters((f) => ({ ...f, vol: Number(e.target.value) }))}><option value="0">Volume: All</option><option value="1.5">≥ 1.5x Strong</option><option value="2">≥ 2x High</option><option value="4">≥ 4x Very High</option><option value="6">≥ 6x Extreme</option></select></div>
+            <div className="select-wrap"><select className="term-select" value={filters.setup} onChange={(e) => setFilters((f) => ({ ...f, setup: e.target.value }))}><option value="ALL">Setup: All</option><option value="PDH_BUY">PDH Buy</option><option value="PDL_SELL">PDL Sell</option><option value="BUY_CONTINUATION">Buy Continuation</option><option value="SELL_CONTINUATION">Sell Continuation</option></select></div>
+            <div className="select-wrap"><select className="term-select" value={filters.sort} onChange={(e) => setFilters((f) => ({ ...f, sort: e.target.value }))}><option value="PRIME">Sort: PRIME Score</option><option value="VOLUME">Sort: Volume Multiple</option><option value="DISTANCE">Sort: Level Distance</option><option value="CHANGE">Sort: % Change</option></select></div>
+            <div className="relative min-w-[150px] flex-1 sm:flex-none"><Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-600" /><input className="term-input pl-7" placeholder="SYMBOL" value={filters.query} onChange={(e) => setFilters((f) => ({ ...f, query: e.target.value }))} /></div>
+            <div className="ml-auto flex items-center gap-2"><span className="mono text-[10px] text-slate-500">{filtered.length}/{payload?.rows.length ?? 0} rows</span><button onClick={exportCsv} className="flex items-center gap-1.5 rounded-md border border-[#26334b] bg-[#0c1422] px-2.5 py-1.5 text-[10px] font-semibold tracking-widest text-slate-400 hover:border-sky-400/30 hover:text-sky-300"><Download size={11} /> CSV</button></div>
           </div>
         </section>
 
         <ScannerTable rows={filtered} expanded={expanded} onToggle={toggleRow} />
         <SignalLog events={payload?.events ?? []} />
-
-        <footer className="pb-8 pt-1 text-center text-[10px] text-slate-600">
-          Prime Technical Scanner · NSE F&O stock universe · PDH/PDL + 20 EMA + volume confirmation
-        </footer>
+        <footer className="pb-8 pt-1 text-center text-[10px] text-slate-600">Prime Technical Scanner · NSE F&O stock universe · PDH/PDL + 20 EMA + volume confirmation + PRIME quality ranking</footer>
       </main>
     </div>
   );
