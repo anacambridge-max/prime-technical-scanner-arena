@@ -1,2 +1,2 @@
 Deployment trigger for the connected Vercel project.
-Current fix: use Upstox intraday 5m candles when historical V3 has no current-session candles.
+Current fix: PRIME quality ranking now prioritizes the strongest qualified PDH/PDL moves using breakout penetration, volume, candle quality, close location, 20 EMA structure, impulse, early trigger timing, and range expansion.
