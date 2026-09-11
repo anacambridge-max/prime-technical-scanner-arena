@@ -31,30 +31,18 @@ export const SCANNER_CONFIG = {
   breakoutVolMin: num(process.env.BREAKOUT_VOL_MIN, 1.5),
   continuationVolMin: num(process.env.CONTINUATION_VOL_MIN, 1.5),
   nearLevelPct: num(process.env.NEAR_LEVEL_PCT, 0.75),
-  // Bullish PDH breakouts are confirmed on the first completed 5-minute
-  // candle itself when volume + 20 EMA conditions are satisfied. No extra
-  // follow-through candle is required. A later close back below PDH still
-  // invalidates the signal through the engine's failure check.
   followThroughCandles: num(process.env.FOLLOW_THROUGH_CANDLES, 0),
   retestPct: num(process.env.RETEST_PCT, 0.35),
   continuationLookback: 12,
   riskReward: num(process.env.RISK_REWARD, 2),
   slBufferPct: num(process.env.SL_BUFFER_PCT, 0.15),
   rescanSeconds: num(process.env.RESCAN_SECONDS, 45),
-
-  // A single completed 5-minute candle is enough to evaluate a symbol.
-  // Therefore the 09:15 candle becomes eligible at 09:20. This is important:
-  // do not wait for 5 completed candles (09:40) just to start showing WATCH /
-  // SETUP signals. The 20 EMA and volume reference are already warmed from
-  // previous-session candles, so opening-minute analysis is valid.
   minCandlesRequired: 1,
-
-  // Upstox standard APIs allow 50 requests/sec and 500 requests/minute.
-  // Keep concurrency modest AND pace every HTTP request globally inside the
-  // serverless worker. This avoids burst 429s when each symbol needs both
-  // intraday and historical candle data.
-  upstoxConcurrency: 4,
-  upstoxMinRequestIntervalMs: 120,
+  // Two compact candle requests per symbol: previous-day 1M warmup + today's
+  // 1M intraday. Eight workers reduce first-scan latency while the global
+  // request gate stays below the Upstox request-rate ceiling.
+  upstoxConcurrency: 8,
+  upstoxMinRequestIntervalMs: 90,
   requestTimeoutMs: 3000,
   maxRetries: 1,
   eventLogLimit: 250,
