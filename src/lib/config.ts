@@ -18,7 +18,9 @@ export const SCANNER_CONFIG = {
   timeframeMinutes: 5,
   marketOpen: "09:15",
   scanStart: hhmm(process.env.SCAN_START, "09:15"),
-  scanEnd: hhmm(process.env.SCAN_END, "10:00"),
+  // No 09:15–10:00 scan window anymore. Signals are scanned continuously
+  // through the NSE session and remain available in the dashboard all day.
+  scanEnd: "15:30",
   marketClose: "15:30",
   emaPeriod: num(process.env.EMA_PERIOD, 20),
   emaSlopeLookback: 3,
