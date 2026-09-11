@@ -40,10 +40,12 @@ export const SCANNER_CONFIG = {
   slBufferPct: num(process.env.SL_BUFFER_PCT, 0.15),
   rescanSeconds: num(process.env.RESCAN_SECONDS, 45),
   minCandlesRequired: 1,
-  // Upstox standard APIs have a 500 requests/minute ceiling. 120ms pacing
-  // keeps the scanner at or below that ceiling while 8 workers hide latency.
-  upstoxConcurrency: 8,
-  upstoxMinRequestIntervalMs: 120,
+  // Upstox standard APIs allow up to 50 requests/sec and 500 requests/min.
+  // A 25ms global launch gap caps this invocation at ~40 req/sec while the
+  // higher worker count keeps network latency from making the 206-stock scan
+  // unnecessarily slow.
+  upstoxConcurrency: 20,
+  upstoxMinRequestIntervalMs: 25,
   requestTimeoutMs: 3000,
   maxRetries: 1,
   eventLogLimit: 250,
