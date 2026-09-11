@@ -48,6 +48,18 @@ export async function getMultiDashboardPayload(force = false): Promise<ScanPaylo
   const phase = marketPhase(now, SCANNER_CONFIG);
   const cached = cache.get(dateKey);
 
+  // Never start a new expensive Upstox scan after the NSE session has closed.
+  // If this serverless instance has today's cache, return it; otherwise show
+  // an explicit frozen/no-scan state instead of launching hundreds of API calls.
+  if (phase === "SCAN_ENDED") {
+    if (cached) return { ...cached, meta: { ...cached.meta, ranScan: false, message: "Market closed — showing today's frozen 1M / 3M / 5M results." } };
+    const timeframes = { "1": emptyResult(1), "3": emptyResult(3), "5": emptyResult(5) };
+    return {
+      meta: makeMeta(dateKey, now, phase, "UPSTOX", 0, 0, "Market closed — no new scan is started after 15:30 IST. Today's results will remain frozen."),
+      rows: [], events: [], timeframes,
+    };
+  }
+
   if (!force && cached && phase === "SCAN_ENDED") return { ...cached, meta: { ...cached.meta, ranScan: false, message: "Scan window ended — showing today's frozen 1M / 3M / 5M results." } };
   if (phase === "PRE_OPEN") {
     const timeframes = { "1": emptyResult(1), "3": emptyResult(3), "5": emptyResult(5) };
