@@ -43,9 +43,17 @@ async function fetchJson(url: string): Promise<unknown> {
 }
 
 async function fetch1mIntraday(key: string): Promise<CandlePoint[]> {
-  return normalizeCandles(await fetchJson(
+  const v3 = normalizeCandles(await fetchJson(
     `${API_BASE}/v3/historical-candle/intraday/${encodeURIComponent(key)}/minutes/1`,
   ));
+  if (v3.length) return v3;
+  try {
+    return normalizeCandles(await fetchJson(
+      `${API_BASE}/v2/historical-candle/intraday/${encodeURIComponent(key)}/1minute`,
+    ));
+  } catch {
+    return v3;
+  }
 }
 
 async function fetchPreviousWarmup(key: string, todayKey: string): Promise<CandlePoint[]> {
@@ -98,29 +106,42 @@ function likelyLevelBreak(candles: CandlePoint[], levels: PrevDayLevels | null):
 
 interface DailyQuote { pdh: number; pdl: number; prevClose: number; prevOpen: number; dayKey: string; }
 
+type DailyQuoteItem = { instrument_token?: string; prev_ohlc?: { open?: number; high?: number; low?: number; close?: number; ts?: string | number } };
+
 async function fetchDailyLevels(keys: Map<string, string>): Promise<Map<string, DailyQuote>> {
   const result = new Map<string, DailyQuote>();
   const entries = Array.from(keys.entries());
   if (!entries.length) return result;
-  try {
-    const instrumentKeys = entries.map(([, key]) => key).join(",");
-    const payload = await fetchJson(
-      `${API_BASE}/v3/market-quote/ohlc?instrument_key=${encodeURIComponent(instrumentKeys)}&interval=1d`,
-    ) as { data?: Record<string, any> };
-    const data = payload?.data ?? {};
-    for (const [symbol, instrumentKey] of entries) {
-      const item = Object.values(data).find((v: any) => v?.instrument_token === instrumentKey);
-      const prev = item?.prev_ohlc;
-      if (!prev || !Number.isFinite(Number(prev.high)) || !Number.isFinite(Number(prev.low))) continue;
-      result.set(symbol, {
-        pdh: Number(prev.high),
-        pdl: Number(prev.low),
-        prevClose: Number(prev.close),
-        prevOpen: Number(prev.open),
-        dayKey: prev.ts ? dayKey(Number(prev.ts)) : "",
-      });
+
+  // Keep the multi-key OHLC URL comfortably below proxy/URL-length limits.
+  // Upstox accepts multiple instrument keys in one request, so 50-key chunks
+  // still reduce this from 206 requests to only a handful of calls.
+  const chunkSize = 50;
+  for (let i = 0; i < entries.length; i += chunkSize) {
+    const chunk = entries.slice(i, i + chunkSize);
+    try {
+      const instrumentKeys = chunk.map(([, key]) => key).join(",");
+      const payload = await fetchJson(
+        `${API_BASE}/v3/market-quote/ohlc?instrument_key=${encodeURIComponent(instrumentKeys)}&interval=1d`,
+      ) as { data?: Record<string, DailyQuoteItem> };
+      const data = payload?.data ?? {};
+      for (const [symbol, instrumentKey] of chunk) {
+        const item = Object.entries(data).find(([dataKey, value]) => dataKey === instrumentKey || value?.instrument_token === instrumentKey)?.[1];
+        const prev = item?.prev_ohlc;
+        if (!prev || !Number.isFinite(Number(prev.high)) || !Number.isFinite(Number(prev.low)) || !Number.isFinite(Number(prev.close))) continue;
+        result.set(symbol, {
+          pdh: Number(prev.high),
+          pdl: Number(prev.low),
+          prevClose: Number(prev.close),
+          prevOpen: Number(prev.open ?? prev.close),
+          dayKey: prev.ts ? dayKey(typeof prev.ts === "number" ? prev.ts : Date.parse(String(prev.ts))) : "",
+        });
+      }
+    } catch {
+      // Continue with the remaining chunks; historical warmup remains the
+      // fallback for candidates that later need a previous-session level.
     }
-  } catch {}
+  }
   return result;
 }
 
@@ -131,8 +152,8 @@ export async function collectMultiMarketData(symbols: string[], dateKey: string,
 
   const feeds: MultiFeed[] = symbols.map(symbol => ({ symbol, candles1m: [], warmup1m: [], levels: null, ltp: null, error: null }));
 
-  // Phase 1: one batched daily quote supplies PDH/PDL for the whole universe;
-  // one current-day 1M request per stock supplies all 1M/3M/5M candles.
+  // Phase 1: batched daily quote supplies PDH/PDL; one current-day 1M
+  // request per stock supplies all 1M/3M/5M candles.
   const dailyLevels = await fetchDailyLevels(keys);
   await mapPool(feeds, Math.max(1, concurrency), async feed => {
     const key = keys.get(feed.symbol);
@@ -169,7 +190,7 @@ export async function collectMultiMarketData(symbols: string[], dateKey: string,
     feeds,
     source: "UPSTOX",
     notes: [
-      `Fast staged feed: 1 batched daily PDH/PDL quote + 1 current-day 1M request per F&O stock; historical EMA/volume warmup only for PDH/PDL candidates`,
+      `Fast staged feed: batched daily PDH/PDL quotes + current-day 1M requests; historical EMA/volume warmup only for PDH/PDL candidates`,
       `${candidates.length} stocks touched/crossed PDH/PDL and required historical warmup`,
       `${resolved}/${symbols.length} symbols have PDH/PDL levels; ${usable}/${symbols.length} symbols have usable completed candles`,
     ],
