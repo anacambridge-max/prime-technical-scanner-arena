@@ -26,7 +26,14 @@ export default function MultiTimeframeDashboard() {
   }, []);
 
   useEffect(() => { load(false); }, [load]);
-  const poll = Math.min(60, Math.max(30, payload?.meta.config.rescanSeconds ?? 45));
+
+  // The initial full F&O feed is intentionally rate-limited by Upstox. While
+  // that first request is running, poll frequently so we do not miss the
+  // moment it completes. Once a real scan exists, return to the normal 45s
+  // cadence. Previously the 45s interval could miss a ~50s first scan and
+  // leave the UI showing "scan in progress" until the 90s mark.
+  const initialScanRunning = !payload?.meta.lastScanAt || payload?.meta.ranScan === false;
+  const poll = initialScanRunning ? 5 : Math.min(60, Math.max(30, payload.meta.config.rescanSeconds ?? 45));
   useEffect(() => { const id = setInterval(() => load(false), poll * 1000); return () => clearInterval(id); }, [load, poll]);
 
   const result: TimeframeScanResult | null = payload?.timeframes?.[String(active) as "1" | "3" | "5"] ?? null;
