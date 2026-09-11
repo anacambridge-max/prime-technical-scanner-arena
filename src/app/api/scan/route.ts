@@ -6,7 +6,10 @@ import { upstoxConfigured } from "@/lib/upstox";
 import type { ScanPayload } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// The first F&O scan can require a few hundred paced Upstox requests.
+// Keep the route alive long enough for the initial result instead of leaving
+// the browser permanently on the "scan in progress" placeholder.
+export const maxDuration = 300;
 
 type ScanRuntimeState = typeof globalThis & {
   __primeMultiScanInFlight?: Promise<ScanPayload>;
