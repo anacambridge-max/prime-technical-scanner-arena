@@ -38,11 +38,10 @@ export const SCANNER_CONFIG = {
   slBufferPct: num(process.env.SL_BUFFER_PCT, 0.15),
   rescanSeconds: num(process.env.RESCAN_SECONDS, 45),
   minCandlesRequired: 1,
-  // Two compact candle requests per symbol: previous-day 1M warmup + today's
-  // 1M intraday. Eight workers reduce first-scan latency while the global
-  // request gate stays below the Upstox request-rate ceiling.
+  // Upstox standard APIs have a 500 requests/minute ceiling. 120ms pacing
+  // keeps the scanner at or below that ceiling while 8 workers hide latency.
   upstoxConcurrency: 8,
-  upstoxMinRequestIntervalMs: 90,
+  upstoxMinRequestIntervalMs: 120,
   requestTimeoutMs: 3000,
   maxRetries: 1,
   eventLogLimit: 250,
