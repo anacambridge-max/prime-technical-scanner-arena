@@ -1,9 +1,17 @@
 import type { CandlePoint, PrevDayLevels } from "./types";
-import { resolveInstrumentKeys, fetchLtpBatch, mapPool, normalizeCandles } from "./upstox";
+import { resolveInstrumentKeys, mapPool, normalizeCandles } from "./upstox";
 import { istDateKey, epochForIst, isCandleCompleted } from "./time";
 import { SCANNER_CONFIG } from "./config";
 
-export interface MultiFeed { symbol: string; candles1m: CandlePoint[]; warmup1m: CandlePoint[]; levels: PrevDayLevels | null; ltp: number | null; error: string | null; }
+export interface MultiFeed {
+  symbol: string;
+  candles1m: CandlePoint[];
+  warmup1m: CandlePoint[];
+  levels: PrevDayLevels | null;
+  ltp: number | null;
+  error: string | null;
+}
+
 export const MULTI_TIMEFRAMES = [1, 3, 5] as const;
 const API_BASE = "https://api.upstox.com";
 let nextRequestAt = 0;
@@ -16,19 +24,42 @@ async function pace(): Promise<void> {
   if (delay > 0) await new Promise(r => setTimeout(r, delay));
 }
 
-async function fetch1m(url: string): Promise<CandlePoint[]> {
+async function fetchJson(url: string): Promise<unknown> {
   await pace();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SCANNER_CONFIG.requestTimeoutMs);
   try {
     const token = process.env.UPSTOX_ACCESS_TOKEN?.trim();
-    const res = await fetch(url, { headers: { Accept: "application/json", Authorization: `Bearer ${token}` }, signal: controller.signal, cache: "no-store" });
+    const res = await fetch(url, {
+      headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+      cache: "no-store",
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return normalizeCandles(await res.json());
-  } finally { clearTimeout(timer); }
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-function dayKey(t: number): string { return new Date(t).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); }
+async function fetch1mIntraday(key: string): Promise<CandlePoint[]> {
+  return normalizeCandles(await fetchJson(
+    `${API_BASE}/v3/historical-candle/intraday/${encodeURIComponent(key)}/minutes/1`,
+  ));
+}
+
+async function fetchPreviousWarmup(key: string, todayKey: string): Promise<CandlePoint[]> {
+  const todayStart = epochForIst(todayKey, "00:00").getTime();
+  const fromKey = istDateKey(new Date(todayStart - 7 * 86400000));
+  const candles = normalizeCandles(await fetchJson(
+    `${API_BASE}/v3/historical-candle/${encodeURIComponent(key)}/minutes/1/${todayKey}/${fromKey}`,
+  ));
+  return candles.filter(c => c.t < todayStart);
+}
+
+function dayKey(t: number): string {
+  return new Date(t).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
 
 function aggregate(candles: CandlePoint[], minutes: 3 | 5): CandlePoint[] {
   const groups = new Map<string, CandlePoint>();
@@ -60,31 +91,37 @@ function previousLevels(prior: CandlePoint[]): PrevDayLevels | null {
   return { pdh: Math.max(...prev.map(c => c.h)), pdl: Math.min(...prev.map(c => c.l)), prevClose: prev[prev.length - 1].c, prevOpen: prev[0].o, dayKey: prevKey };
 }
 
-// The V3 historical endpoint's to_date is inclusive. We first ask for the
-// previous session through today in ONE request. Only symbols for which the
-// historical endpoint returns no current-day candles use the intraday fallback.
-// This normally cuts the first live scan from ~412 candle requests to ~206.
-async function fetchSymbol(symbol: string, key: string, todayKey: string): Promise<MultiFeed> {
+function likelyLevelBreak(candles: CandlePoint[], levels: PrevDayLevels | null): boolean {
+  if (!levels || !candles.length) return false;
+  return candles.some(c => c.h >= levels.pdh || c.l <= levels.pdl || c.c >= levels.pdh || c.c <= levels.pdl);
+}
+
+interface DailyQuote { pdh: number; pdl: number; prevClose: number; prevOpen: number; dayKey: string; }
+
+async function fetchDailyLevels(keys: Map<string, string>): Promise<Map<string, DailyQuote>> {
+  const result = new Map<string, DailyQuote>();
+  const entries = Array.from(keys.entries());
+  if (!entries.length) return result;
   try {
-    const todayStart = epochForIst(todayKey, "00:00").getTime();
-    const previousDay = istDateKey(new Date(todayStart - 86400000));
-    const encoded = encodeURIComponent(key);
-    const historical = await fetch1m(`${API_BASE}/v3/historical-candle/${encoded}/minutes/1/${todayKey}/${previousDay}`);
-    const prior = historical.filter(c => c.t < todayStart);
-    let today = historical.filter(c => c.t >= todayStart);
-
-    if (!today.length) {
-      try {
-        const intraday = await fetch1m(`${API_BASE}/v3/historical-candle/intraday/${encoded}/minutes/1`);
-        today = intraday.filter(c => c.t >= todayStart);
-      } catch { today = []; }
+    const instrumentKeys = entries.map(([, key]) => key).join(",");
+    const payload = await fetchJson(
+      `${API_BASE}/v3/market-quote/ohlc?instrument_key=${encodeURIComponent(instrumentKeys)}&interval=1d`,
+    ) as { data?: Record<string, any> };
+    const data = payload?.data ?? {};
+    for (const [symbol, instrumentKey] of entries) {
+      const item = Object.values(data).find((v: any) => v?.instrument_token === instrumentKey);
+      const prev = item?.prev_ohlc;
+      if (!prev || !Number.isFinite(Number(prev.high)) || !Number.isFinite(Number(prev.low))) continue;
+      result.set(symbol, {
+        pdh: Number(prev.high),
+        pdl: Number(prev.low),
+        prevClose: Number(prev.close),
+        prevOpen: Number(prev.open),
+        dayKey: prev.ts ? dayKey(Number(prev.ts)) : "",
+      });
     }
-
-    const levels = previousLevels(prior);
-    return { symbol, candles1m: today, warmup1m: prior, levels, ltp: today[today.length - 1]?.c ?? null, error: levels ? null : "previous day levels unavailable" };
-  } catch (err) {
-    return { symbol, candles1m: [], warmup1m: [], levels: null, ltp: null, error: (err as Error).message };
-  }
+  } catch {}
+  return result;
 }
 
 export async function collectMultiMarketData(symbols: string[], dateKey: string, cutoff: Date, concurrency: number): Promise<{ feeds: MultiFeed[]; source: "UPSTOX" | "SIMULATION"; notes: string[] }> {
@@ -93,29 +130,50 @@ export async function collectMultiMarketData(symbols: string[], dateKey: string,
   try { keys = await resolveInstrumentKeys(symbols, SCANNER_CONFIG.requestTimeoutMs); } catch {}
 
   const feeds: MultiFeed[] = symbols.map(symbol => ({ symbol, candles1m: [], warmup1m: [], levels: null, ltp: null, error: null }));
+
+  // Phase 1: one batched daily quote supplies PDH/PDL for the whole universe;
+  // one current-day 1M request per stock supplies all 1M/3M/5M candles.
+  const dailyLevels = await fetchDailyLevels(keys);
   await mapPool(feeds, Math.max(1, concurrency), async feed => {
     const key = keys.get(feed.symbol);
     if (!key) { feed.error = "instrument key unresolved"; return; }
-    const result = await fetchSymbol(feed.symbol, key, dateKey);
-    feed.candles1m = result.candles1m.filter(c => isCandleCompleted(c.t, 1, cutoff));
-    feed.warmup1m = result.warmup1m;
-    feed.levels = result.levels;
-    feed.ltp = result.ltp;
-    feed.error = result.error;
+    const daily = dailyLevels.get(feed.symbol);
+    if (daily) feed.levels = daily;
+    try {
+      const current = await fetch1mIntraday(key);
+      feed.candles1m = current.filter(c => isCandleCompleted(c.t, 1, cutoff));
+      feed.ltp = feed.candles1m[feed.candles1m.length - 1]?.c ?? null;
+    } catch (err) {
+      feed.error = (err as Error).message;
+    }
   });
 
-  try {
-    const keyList = symbols.map(s => keys.get(s)).filter((k): k is string => Boolean(k));
-    const ltps = await fetchLtpBatch(keyList, Math.min(SCANNER_CONFIG.requestTimeoutMs, 1500));
-    for (const f of feeds) {
-      const key = keys.get(f.symbol);
-      if (key && ltps.has(key)) f.ltp = ltps.get(key) ?? f.ltp;
+  // Phase 2: only actual PDH/PDL touches need historical 1M warmup for the
+  // PRIME EMA/volume checks. Non-candidates cannot produce a PDH/PDL signal.
+  const candidates = feeds.filter(f => likelyLevelBreak(f.candles1m, f.levels));
+  await mapPool(candidates, Math.max(1, Math.min(concurrency, 8)), async feed => {
+    const key = keys.get(feed.symbol);
+    if (!key) return;
+    try {
+      feed.warmup1m = await fetchPreviousWarmup(key, dateKey);
+      if (!feed.levels) feed.levels = previousLevels(feed.warmup1m);
+      if (!feed.levels) feed.error = "previous day levels unavailable";
+    } catch (err) {
+      feed.error = (err as Error).message;
     }
-  } catch {}
+  });
 
   const resolved = feeds.filter(f => f.levels).length;
   const usable = feeds.filter(f => f.levels && f.candles1m.length).length;
-  return { feeds, source: "UPSTOX", notes: [`Fast feed: 1M historical request includes previous session + today when available; locally aggregated into 1M / 3M / 5M`, `${resolved}/${symbols.length} symbols have PDH/PDL levels; ${usable}/${symbols.length} symbols have usable completed candles`] };
+  return {
+    feeds,
+    source: "UPSTOX",
+    notes: [
+      `Fast staged feed: 1 batched daily PDH/PDL quote + 1 current-day 1M request per F&O stock; historical EMA/volume warmup only for PDH/PDL candidates`,
+      `${candidates.length} stocks touched/crossed PDH/PDL and required historical warmup`,
+      `${resolved}/${symbols.length} symbols have PDH/PDL levels; ${usable}/${symbols.length} symbols have usable completed candles`,
+    ],
+  };
 }
 
 export function buildTimeframeCandles(feed: MultiFeed, timeframe: 1 | 3 | 5, cutoff: Date): { candles: CandlePoint[]; warmup: CandlePoint[] } {
