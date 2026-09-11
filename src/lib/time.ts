@@ -1,5 +1,5 @@
 /**
- * Explicit Asia/Kolkata (IST) time handling. All market/scan-window logic
+ * Explicit Asia/Kolkata (IST) time handling. All market-session logic
  * goes through these helpers — never raw server-local time.
  */
 
@@ -67,9 +67,9 @@ export function isWeekdayIST(d: Date = new Date()): boolean {
 }
 
 export type MarketPhase =
-  | "PRE_OPEN" // trading day, before scan start
-  | "LIVE_SCAN" // inside the live scanning window
-  | "SCAN_ENDED" // trading day, window over (results frozen for the day)
+  | "PRE_OPEN" // trading day, before session start
+  | "LIVE_SCAN" // throughout the NSE session
+  | "SCAN_ENDED" // session over (results frozen for the day)
   | "CLOSED"; // weekend / holiday / outside market context
 
 export function marketPhase(
@@ -86,20 +86,19 @@ export function marketPhase(
 }
 
 /**
- * Effective "now" for candle selection: during/after the scan window the
- * engine only sees candles COMPLETED inside the window (no fresh confirmations
- * from stale data later in the day).
+ * Effective "now" for candle selection: include every completed candle
+ * from the session start through the current time, capped at the NSE close.
  */
 export function candleCutoff(
   now: Date,
   cfg: { scanStart: string; scanEnd: string },
   dateKey: string
 ): Date {
-  const windowEnd = epochForIst(dateKey, cfg.scanEnd);
-  return now.getTime() < windowEnd.getTime() ? now : windowEnd;
+  const sessionEnd = epochForIst(dateKey, cfg.scanEnd);
+  return now.getTime() < sessionEnd.getTime() ? now : sessionEnd;
 }
 
-/** A 5-minute candle starting at `t` is COMPLETED if its close time <= cutoff. */
+/** A timeframe candle is COMPLETED if its close time <= cutoff. */
 export function isCandleCompleted(
   startMs: number,
   timeframeMinutes: number,
