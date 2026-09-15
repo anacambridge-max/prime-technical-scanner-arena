@@ -7,6 +7,7 @@ import { istDateKey, istTimeLabel } from "./time";
 import type { ScanPayload, ScanRow, SignalEventRow, Direction, SetupType, LevelTag, SignalStatus, AuditDetails } from "./types";
 
 const SIGNAL_STATUSES = new Set(["CONFIRMED", "SETUP", "WATCH"]);
+const EVENT_LOG_LIMIT = 200;
 
 function toScanRow(r: typeof snapshots.$inferSelect): ScanRow {
   return {
@@ -75,7 +76,7 @@ export async function getLockedDashboardPayload(): Promise<ScanPayload> {
     const eventRows = await db.select().from(signalEvents)
       .where(eq(signalEvents.scanDate, effectiveDate))
       .orderBy(desc(signalEvents.id))
-      .limit(SCANNER_CONFIG.eventLogLimit);
+      .limit(EVENT_LOG_LIMIT);
     events = eventRows.map((e) => ({
       id: e.id,
       time: e.timeLabel,
