@@ -4,11 +4,15 @@ const num = (v: string | undefined, fallback: number) => {
 };
 
 export const SCANNER_CONFIG = {
+  // Legacy 5-minute engine + full-session timing.
   scanStart: "09:15",
   scanEnd: "15:30",
+  timeframeMinutes: 5,
   emaPeriod: 20,
+  emaSlopeLookback: 3,
   volumeRefCandles: 20,
   volumeRefMinimum: 5,
+  volStrong: 1.5,
   volHigh: 2.0,
   volVeryHigh: 4.0,
   volExtreme: 6.0,
@@ -23,9 +27,7 @@ export const SCANNER_CONFIG = {
   rescanSeconds: num(process.env.RESCAN_SECONDS, 45),
   minCandlesRequired: 1,
   // Upstox has both per-second and per-minute limits. Keep the scanner below
-  // the stricter 500-request/minute ceiling. 125ms gives at most 480 launches
-  // per minute in this invocation while still scanning the 206-stock universe
-  // in roughly 26 seconds before any candidate warmup.
+  // the stricter 500-request/minute ceiling.
   upstoxConcurrency: 6,
   upstoxMinRequestIntervalMs: 125,
   requestTimeoutMs: 8000,
