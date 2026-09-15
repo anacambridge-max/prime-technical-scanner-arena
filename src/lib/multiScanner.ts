@@ -7,6 +7,8 @@ import { analyzeQualitySymbol } from "./qualityEngine";
 
 const labels = { 1: "1 MIN", 3: "3 MIN", 5: "5 MIN" } as const;
 const cache = new Map<string, ScanPayload>();
+let lastRateLimitAt = 0;
+const RATE_LIMIT_COOLDOWN_MS = 60_000;
 
 function emptyResult(tf: 1 | 3 | 5): TimeframeScanResult {
   return { timeframeMinutes: tf, label: labels[tf], rows: [], events: [], counts: { confirmed: 0, setups: 0, watch: 0 }, processed: 0, errors: 0, lastCandleTime: null };
@@ -55,7 +57,6 @@ export async function getMultiDashboardPayload(force = false): Promise<ScanPaylo
     return { meta: makeMeta(dateKey, now, phase, "UPSTOX", 0, 0, "Market closed — no new scan is started after 15:30 IST. Today's results will remain frozen."), rows: [], events: [], timeframes };
   }
 
-  // Weekends/holidays are outside the live scan phase; do not call Upstox.
   if (phase === "CLOSED") {
     const timeframes = { "1": emptyResult(1), "3": emptyResult(3), "5": emptyResult(5) };
     return { meta: makeMeta(dateKey, now, phase, "UPSTOX", 0, 0, "Market closed — no new scan is running."), rows: [], events: [], timeframes };
@@ -67,8 +68,16 @@ export async function getMultiDashboardPayload(force = false): Promise<ScanPaylo
     return payload;
   }
 
+  if (!force && Date.now() - lastRateLimitAt < RATE_LIMIT_COOLDOWN_MS) {
+    if (cached) return { ...cached, meta: { ...cached.meta, ranScan: false, message: "Upstox rate limit detected — waiting 60 seconds before the next live scan." } };
+    const timeframes = { "1": emptyResult(1), "3": emptyResult(3), "5": emptyResult(5) };
+    return { meta: makeMeta(dateKey, now, phase, "UPSTOX", 0, 0, "Upstox rate limit detected — waiting 60 seconds before the next live scan."), rows: [], events: [], timeframes };
+  }
+
   const cutoff = candleCutoff(now, SCANNER_CONFIG, dateKey);
   const collected = await collectMultiMarketData(UNIVERSE, dateKey, cutoff, SCANNER_CONFIG.upstoxConcurrency);
+  const has429 = collected.notes.some(note => /HTTP 429|rate limit/i.test(note));
+  if (has429) lastRateLimitAt = Date.now();
   if (!collected.feeds.length) {
     if (cached) return { ...cached, meta: { ...cached.meta, ranScan: false, message: "Live 1M feed unavailable — showing last successful multi-timeframe scan." } };
     const timeframes = { "1": emptyResult(1), "3": emptyResult(3), "5": emptyResult(5) };
