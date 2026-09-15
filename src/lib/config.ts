@@ -25,6 +25,7 @@ export const SCANNER_CONFIG = {
   riskReward: num(process.env.RISK_REWARD, 2),
   slBufferPct: num(process.env.SL_BUFFER_PCT, 0.15),
   rescanSeconds: num(process.env.RESCAN_SECONDS, 45),
+  eventLogLimit: 200,
   minCandlesRequired: 1,
   // Upstox has both per-second and per-minute limits. Keep the scanner below
   // the stricter 500-request/minute ceiling.
