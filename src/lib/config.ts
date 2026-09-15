@@ -1,32 +1,14 @@
-/**
- * Central scanner configuration. Every threshold used by the Prime Technical
- * engine lives here so it can be tuned in one place.
- */
-
-function num(envValue: string | undefined, fallback: number): number {
-  if (envValue == null || envValue.trim() === "") return fallback;
-  const n = Number(envValue);
+const num = (v: string | undefined, fallback: number) => {
+  const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
-}
-
-function hhmm(envValue: string | undefined, fallback: string): string {
-  if (envValue && /^\d{1,2}:\d{2}$/.test(envValue.trim())) return envValue.trim();
-  return fallback;
-}
+};
 
 export const SCANNER_CONFIG = {
-  timeframeMinutes: 5,
-  marketOpen: "09:15",
-  scanStart: hhmm(process.env.SCAN_START, "09:15"),
-  // No 09:15–10:00 scan window anymore. Signals are scanned continuously
-  // through the NSE session and remain available in the dashboard all day.
+  scanStart: "09:15",
   scanEnd: "15:30",
-  marketClose: "15:30",
-  emaPeriod: num(process.env.EMA_PERIOD, 20),
-  emaSlopeLookback: 3,
-  volumeRefCandles: num(process.env.VOLUME_REF_CANDLES, 20),
+  emaPeriod: 20,
+  volumeRefCandles: 20,
   volumeRefMinimum: 5,
-  volStrong: 1.5,
   volHigh: 2.0,
   volVeryHigh: 4.0,
   volExtreme: 6.0,
@@ -40,15 +22,12 @@ export const SCANNER_CONFIG = {
   slBufferPct: num(process.env.SL_BUFFER_PCT, 0.15),
   rescanSeconds: num(process.env.RESCAN_SECONDS, 45),
   minCandlesRequired: 1,
-  // Upstox standard APIs allow up to 50 requests/sec and 500 requests/min.
-  // A 25ms global launch gap caps this invocation at ~40 req/sec while the
-  // higher worker count keeps network latency from making the 206-stock scan
-  // unnecessarily slow.
-  upstoxConcurrency: 20,
-  upstoxMinRequestIntervalMs: 25,
-  requestTimeoutMs: 3000,
-  maxRetries: 1,
-  eventLogLimit: 250,
+  // Upstox has both per-second and per-minute limits. Keep the scanner below
+  // the stricter 500-request/minute ceiling. 125ms gives at most 480 launches
+  // per minute in this invocation while still scanning the 206-stock universe
+  // in roughly 26 seconds before any candidate warmup.
+  upstoxConcurrency: 6,
+  upstoxMinRequestIntervalMs: 125,
+  requestTimeoutMs: 8000,
+  maxRetries: 2,
 } as const;
-
-export type ScannerConfig = typeof SCANNER_CONFIG;
